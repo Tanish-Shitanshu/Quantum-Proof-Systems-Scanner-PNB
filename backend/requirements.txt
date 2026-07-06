@@ -1,10 +1,25 @@
-fastapi
-uvicorn
-pydantic
-python-multipart
-requests
-cryptography
-python-dotenv
-apscheduler
-dateparser
-reportlab
+# Core API framework
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pydantic==2.10.3
+
+# File upload support
+python-multipart==0.0.12
+
+# HTTP client
+requests==2.32.3
+
+# TLS / certificate inspection
+cryptography==44.0.0
+
+# Environment variable loading
+python-dotenv==1.0.1
+
+# Scheduled scan jobs
+apscheduler==3.10.4
+
+# Natural-language date parsing for scheduler
+dateparser==1.2.0
+
+# PDF report generation
+reportlab==4.2.5
