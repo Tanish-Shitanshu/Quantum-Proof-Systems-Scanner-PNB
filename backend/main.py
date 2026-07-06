@@ -161,6 +161,21 @@ app.add_middleware(
 )
 app.add_middleware(SecurityHeadersMiddleware)
 
+@app.get("/health", tags=["Health"])
+def health_check():
+    """
+    Liveness probe for load balancers, Docker HEALTHCHECK, and uptime monitors.
+
+    Returns HTTP 200 with a JSON body when the API is ready to serve requests.
+    Clients can poll this endpoint without triggering any database or network I/O.
+    """
+    return {
+        "status": "ok",
+        "service": "Quantum-Proof Systems Scanner API",
+        "version": "1.0.0",
+    }
+
+
 @app.on_event("startup")
 def startup_event():
     seed_database()
