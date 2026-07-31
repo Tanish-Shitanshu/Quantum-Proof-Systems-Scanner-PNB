@@ -17,6 +17,15 @@ const AIAssistant = () => {
     }
   ]);
 
+  const sampleCommands = [
+    'Scan example.com',
+    'Schedule scan for example.com every week at 3 PM email to admin@company.com',
+    'Email report of example.com to admin@company.com',
+    'Show vulnerable assets',
+    'Generate report',
+    'Explain TLS 1.0 vulnerability',
+  ];
+
   const handleSend = async (manualInput?: string) => {
     const userMsg = (manualInput || input).trim();
     if (!userMsg) return;
@@ -113,7 +122,7 @@ const AIAssistant = () => {
             <div className="flex gap-2">
               <div className="bg-surface-container-lowest px-4 py-2 rounded-lg shadow-sm flex items-center gap-2 border border-outline-variant/10">
                 <span className="text-xs font-bold text-on-surface-variant">ENGINE:</span>
-                <span className="text-xs font-bold text-primary">QUANTUM-GPT-4</span>
+                <span className="text-xs font-bold text-primary">BACKEND /api/chat</span>
               </div>
             </div>
           </div>
@@ -128,19 +137,42 @@ const AIAssistant = () => {
                   <button onClick={() => handleSend("Summarize transition plan for TLS 1.3 migration")}
                     className="w-full text-left p-3 bg-surface-container-lowest rounded-lg border-l-4 border-primary shadow-sm cursor-pointer">
                     <p className="text-xs font-bold truncate">TLS 1.3 Transition Plan</p>
-                    <p className="text-[10px] text-on-surface-variant mt-1">2 mins ago</p>
+                    <p className="text-[10px] text-on-surface-variant mt-1">Sample Prompt</p>
                   </button>
                   <button onClick={() => handleSend("Explain symmetric key rotation best practices")}
                     className="w-full text-left p-3 hover:bg-surface-container-highest/50 rounded-lg cursor-pointer transition-colors">
                     <p className="text-xs font-medium text-on-surface-variant truncate">Symmetric Key Rotation</p>
-                    <p className="text-[10px] text-on-surface-variant/60 mt-1">1 hour ago</p>
+                    <p className="text-[10px] text-on-surface-variant/60 mt-1">Sample Prompt</p>
                   </button>
                   <button onClick={() => handleSend("Run a NIST compliance audit summary for latest scans")}
                     className="w-full text-left p-3 hover:bg-surface-container-highest/50 rounded-lg cursor-pointer transition-colors">
                     <p className="text-xs font-medium text-on-surface-variant truncate">NIST Compliance Audit</p>
-                    <p className="text-[10px] text-on-surface-variant/60 mt-1">Yesterday</p>
+                    <p className="text-[10px] text-on-surface-variant/60 mt-1">Sample Prompt</p>
                   </button>
                 </div>
+              </div>
+
+              <div className="bg-surface-container-lowest rounded-xl p-4 border border-outline-variant/10">
+                <p className="text-[10px] font-bold text-on-surface-variant tracking-widest uppercase mb-3">Working Commands</p>
+                <div className="space-y-2">
+                  {sampleCommands.map((cmd) => (
+                    <button
+                      key={cmd}
+                      onClick={() => handleSend(cmd)}
+                      className="w-full text-left px-3 py-2 text-[11px] rounded-lg bg-surface-container-highest hover:bg-surface-container-high transition-colors"
+                    >
+                      {cmd}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="bg-surface-container-lowest rounded-xl p-4 border border-outline-variant/10">
+                <p className="text-[10px] font-bold text-on-surface-variant tracking-widest uppercase mb-2">Email Prerequisite</p>
+                <p className="text-[11px] text-on-surface-variant leading-relaxed">
+                  For email commands to work, set SMTP_EMAIL and SMTP_PASSWORD in backend/.env.
+                  Without these credentials, email dispatch endpoints will fail.
+                </p>
               </div>
               
               {/* Suggested Actions Bento Block */}
@@ -328,13 +360,13 @@ const AIAssistant = () => {
             </div>
             <p className="text-xs font-bold text-on-surface mb-2">PQC Discovery Engine</p>
             <p className="text-[11px] leading-relaxed text-on-surface-variant">
-              The assistant is currently cross-referencing your <span className="font-bold text-on-surface">Kyber-768</span> implementation against the latest NIST draft standards.
+              The assistant response is generated from backend parser actions and current runtime scan/report data.
             </p>
             <div className="mt-4 pt-3 border-t border-outline-variant/20">
               <div className="w-full bg-surface-container-highest h-1 rounded-full overflow-hidden">
-                <div className="bg-primary h-full w-3/4 rounded-full"></div>
+                <div className="bg-primary h-full w-full rounded-full"></div>
               </div>
-              <p className="text-[9px] text-on-surface-variant mt-2 font-medium">75% Context Synchronization Complete</p>
+              <p className="text-[9px] text-on-surface-variant mt-2 font-medium">Live API command mode</p>
             </div>
           </div>
         </div>

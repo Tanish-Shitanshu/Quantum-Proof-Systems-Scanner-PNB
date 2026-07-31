@@ -115,13 +115,38 @@ We spared absolutely no expense building a modern, highly concurrent stack:
 2. **Start the Systems:**
    *First Terminal (Backend):*
    ```bash
-   cd backend
-   uvicorn main:app --reload --port 8000
+  python -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
    ```
    *Second Terminal (Frontend):*
    ```bash
    npm run dev
    ```
+
+---
+
+## Chatbot Working Commands
+
+Use these examples directly in the AI Assistant screen:
+
+1. `Scan example.com`
+2. `Schedule scan for example.com every week at 3 PM email to admin@company.com`
+3. `Email report of example.com to admin@company.com`
+4. `Show vulnerable assets`
+5. `Generate report`
+6. `Explain TLS 1.0 vulnerability`
+
+## Chatbot Email Prerequisite
+
+Email-related commands require SMTP credentials in `backend/.env`:
+
+- `SMTP_EMAIL`
+- `SMTP_PASSWORD`
+
+Optional for AI summary:
+
+- `GEMINI_API_KEY`
+
+Without valid SMTP credentials, email dispatch endpoints cannot send report emails.
 
 ---
 

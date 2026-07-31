@@ -151,14 +151,14 @@ const MythosDefense = () => {
               Centre of Telematics Evaluated
             </span>
             <span className="px-2.5 py-1 bg-tertiary/10 border border-tertiary/20 text-tertiary rounded text-xs font-mono font-bold tracking-widest uppercase">
-              Anti-Mythos Shield
+              Simulation Mode
             </span>
           </div>
           <h2 className="text-[1.75rem] font-bold text-on-surface tracking-tight leading-none mb-2">
             OS Shield & Mythos Defense Hub
           </h2>
           <p className="text-on-surface-variant text-sm max-w-xl">
-            Dynamic offline vulnerability mapper, migration estimator, and active defensive gating matrix protecting assets against offensive frameworks like Claude's Mythos.
+            Dynamic offline vulnerability mapper and migration estimator based on modeled OS datasets (not direct live endpoint patch telemetry).
           </p>
         </div>
         
@@ -169,10 +169,10 @@ const MythosDefense = () => {
           </div>
           <div>
             <p className="text-[10px] text-on-surface-variant font-bold uppercase tracking-wider">Committee Assessment</p>
-            <p className="text-xs font-bold text-on-surface">FRIDAY AUDIT READINESS</p>
+            <p className="text-xs font-bold text-on-surface">SIMULATION READINESS</p>
             <div className="flex items-center gap-1.5 mt-0.5">
               <div className="w-2 h-2 rounded-full bg-tertiary animate-ping"></div>
-              <span className="text-[11px] font-mono text-tertiary font-bold">100% Verdict Target</span>
+              <span className="text-[11px] font-mono text-tertiary font-bold">Modeled score for planning</span>
             </div>
           </div>
         </div>

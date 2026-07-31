@@ -430,7 +430,7 @@ const Scanner = () => {
                     <div className="flex items-center justify-between text-xs font-bold text-on-surface bg-surface-container-highest px-3 py-2 rounded">
                        <span>{scanResult?.scan_result?.algorithm || 'Current'}</span>
                        <span className="material-symbols-outlined text-[14px] text-on-surface-variant opacity-50">arrow_forward</span>
-                       <span className="text-primary">{scanResult?.scan_result?.algorithm === 'RSA' ? 'Kyber-768' : 'NIST PQC Standard'}</span>
+                       <span className="text-primary">{scanResult?.scan_result?.pqc_status && scanResult.scan_result.pqc_status !== 'None' ? scanResult.scan_result.pqc_status : 'PQC migration required'}</span>
                     </div>
                     <div className="mt-1 text-[0.65rem] text-on-surface-variant font-medium">Recommended secure replacement logic.</div>
                   </div>
