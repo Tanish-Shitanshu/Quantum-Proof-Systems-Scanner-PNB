@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { hasPermission } from './Settings';
 
 const Scanner = () => {
   const [searchParams] = useSearchParams();
@@ -23,8 +24,11 @@ const Scanner = () => {
   const [scanMode, setScanMode] = useState<'Full Deep Scan' | 'Quick Scan'>('Full Deep Scan');
   const role = localStorage.getItem('userRole') || 'User';
   const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+  const SCAN_JOB_STORAGE_KEY = 'scannerPendingJobId';
+  const SCAN_DOMAIN_STORAGE_KEY = 'scannerPendingDomain';
+  const [scanJobId, setScanJobId] = useState<string | null>(() => localStorage.getItem(SCAN_JOB_STORAGE_KEY));
 
-  const loadAssetById = async (assetId: string) => {
+  const loadAssetById = useCallback(async (assetId: string) => {
     const res = await fetch(`${apiBase}/api/assets/${encodeURIComponent(assetId)}`);
     if (!res.ok) return;
     const data = await res.json();
@@ -36,7 +40,7 @@ const Scanner = () => {
     if (data?.id) {
       localStorage.setItem('lastScanAssetId', String(data.id));
     }
-  };
+  }, [apiBase]);
 
   useEffect(() => {
     const initialAssetId = searchParams.get('assetId') || localStorage.getItem('lastScanAssetId');
@@ -60,29 +64,129 @@ const Scanner = () => {
   }, [apiBase, searchParams]);
 
   useEffect(() => {
-    const trimmed = target.trim();
-    if (!trimmed || !trimmed.includes('.')) {
-      setScanHistory([]);
-      return;
+    // Debounce: don't fire on every keystroke; wait 600 ms after user stops typing.
+    const debounceTimer = window.setTimeout(() => {
+      const trimmed = target.trim();
+      const endpoint = trimmed && trimmed.includes('.')
+        ? `${apiBase}/api/reports/history?domain=${encodeURIComponent(trimmed)}&limit=200`
+        : `${apiBase}/api/reports/history?limit=200`;
+
+      setHistoryLoading(true);
+      fetch(endpoint, {
+        headers: { 'x-user-role': role },
+      })
+        .then(async (res) => {
+          if (!res.ok) { setScanHistory([]); return; }
+          const data = await res.json();
+          setScanHistory(Array.isArray(data?.data) ? data.data : []);
+        })
+        .catch(() => setScanHistory([]))
+        .finally(() => setHistoryLoading(false));
+    }, 600);
+    return () => window.clearTimeout(debounceTimer);
+  }, [apiBase, role, target]);
+
+  const orderedHistory = useMemo(() => {
+    return [...scanHistory].sort((a: any, b: any) => {
+      const tA = a?.timestamp ? new Date(a.timestamp).getTime() : 0;
+      const tB = b?.timestamp ? new Date(b.timestamp).getTime() : 0;
+      return tB - tA;
+    });
+  }, [scanHistory]);
+
+  const topHistoryEntries = useMemo(() => orderedHistory.slice(0, 4), [orderedHistory]);
+
+  const archivedHistoryByMonth = useMemo(() => {
+    const rows = orderedHistory.slice(4);
+    const groups: Record<string, { label: string; rows: any[] }> = {};
+    for (const row of rows) {
+      const raw = row?.timestamp ? new Date(row.timestamp) : null;
+      const dt = raw && !Number.isNaN(raw.getTime()) ? raw : new Date(0);
+      const key = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`;
+      if (!groups[key]) {
+        groups[key] = {
+          label: dt.toLocaleString(undefined, { month: 'long', year: 'numeric' }),
+          rows: [],
+        };
+      }
+      groups[key].rows.push(row);
+    }
+    return Object.values(groups);
+  }, [orderedHistory]);
+
+  useEffect(() => {
+    if (!scanJobId) return;
+
+    // Discard jobs that were stored in a previous session (older than 2 hours).
+    const storedJobAge = localStorage.getItem('scannerPendingJobStartTime');
+    if (storedJobAge) {
+      const ageMs = Date.now() - Number(storedJobAge);
+      if (ageMs > 2 * 60 * 60 * 1000) {
+        setScanJobId(null);
+        localStorage.removeItem(SCAN_JOB_STORAGE_KEY);
+        localStorage.removeItem(SCAN_DOMAIN_STORAGE_KEY);
+        localStorage.removeItem('scannerPendingJobStartTime');
+        return;
+      }
     }
 
-    setHistoryLoading(true);
-    fetch(`${apiBase}/api/reports/history?domain=${encodeURIComponent(trimmed)}&limit=25`, {
-      headers: {
-        'x-user-role': role,
-      },
-    })
-      .then(async (res) => {
+    let cancelled = false;
+    let timerId: number | undefined;
+    setIsScanning(true);
+
+    const pollJob = async () => {
+      if (cancelled) return;
+      try {
+        const res = await fetch(`${apiBase}/api/scan/jobs/${encodeURIComponent(scanJobId)}`);
         if (!res.ok) {
-          setScanHistory([]);
+          throw new Error(`Unable to read scan job status (${res.status})`);
+        }
+        const job = await res.json();
+        const status = String(job?.status || '').toLowerCase();
+
+        if (status === 'completed') {
+          setIsScanning(false);
+          setScanJobId(null);
+          localStorage.removeItem(SCAN_JOB_STORAGE_KEY);
+          localStorage.removeItem(SCAN_DOMAIN_STORAGE_KEY);
+
+          if (job?.result_asset_id) {
+            await loadAssetById(String(job.result_asset_id));
+          }
+
+          const completedDomain = job?.domain || target.trim();
+          setToastMsg(`Scan Completed: ${completedDomain || 'target'}`);
+          setShowToast(true);
+          setTimeout(() => setShowToast(false), 4000);
           return;
         }
-        const data = await res.json();
-        setScanHistory(Array.isArray(data?.data) ? data.data : []);
-      })
-      .catch(() => setScanHistory([]))
-      .finally(() => setHistoryLoading(false));
-  }, [apiBase, role, target]);
+
+        if (status === 'failed') {
+          setIsScanning(false);
+          setScanJobId(null);
+          localStorage.removeItem(SCAN_JOB_STORAGE_KEY);
+          localStorage.removeItem(SCAN_DOMAIN_STORAGE_KEY);
+          setToastMsg(`Scan failed: ${job?.error || 'Unknown backend error'}`);
+          setShowToast(true);
+          setTimeout(() => setShowToast(false), 5000);
+          return;
+        }
+
+        timerId = window.setTimeout(pollJob, 2500);
+      } catch {
+        timerId = window.setTimeout(pollJob, 3000);
+      }
+    };
+
+    pollJob();
+
+    return () => {
+      cancelled = true;
+      if (timerId) {
+        window.clearTimeout(timerId);
+      }
+    };
+  }, [apiBase, loadAssetById, scanJobId, target]);
 
   const mobileApps = useMemo(() => scanResult?.scan_result?.mobile_info?.apps || [], [scanResult]);
   const topMobileMatch = scanResult?.scan_result?.mobile_info?.most_relevant_app;
@@ -109,30 +213,30 @@ const Scanner = () => {
   }, [scanResult]);
 
   const riskWeights = scanResult?.risk?.weights || {
-    crypto: 0.3,
-    protocol: 0.2,
-    vulnerability: 0.2,
-    exposure: 0.1,
-    third_party: 0.1,
-    governance: 0.1,
+    kem: 0.35,
+    cert_algo: 0.25,
+    protocol: 0.15,
+    cert_health: 0.10,
+    vulnerability: 0.10,
+    exposure: 0.05,
   };
 
   const riskComponents = scanResult?.risk?.components || {
-    crypto: 0,
+    kem: 0,
+    cert_algo: 0,
     protocol: 0,
+    cert_health: 0,
     vulnerability: 0,
     exposure: 0,
-    third_party: 0,
-    governance: 0,
   };
 
   const riskRows = [
-    { key: 'crypto', label: 'Crypto' },
+    { key: 'kem', label: 'KEM / Key Exchange' },
+    { key: 'cert_algo', label: 'Certificate Algo' },
     { key: 'protocol', label: 'Protocol' },
+    { key: 'cert_health', label: 'Cert Health' },
     { key: 'vulnerability', label: 'Vulnerability' },
     { key: 'exposure', label: 'Exposure' },
-    { key: 'third_party', label: 'Third-Party' },
-    { key: 'governance', label: 'Governance' },
   ];
 
   const riskContributionRows = riskRows.map((row) => {
@@ -219,15 +323,16 @@ const Scanner = () => {
 
   const handleScan = async () => {
     if (!target) return;
-    setIsScanning(true);
     try {
-      const res = await fetch(apiBase + '/api/scan', {
+      const domainToScan = target.trim();
+      setIsScanning(true);
+      const res = await fetch(apiBase + '/api/scan/async', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'x-user-role': role
         },
-        body: JSON.stringify({ domain: target, mode: scanMode })
+        body: JSON.stringify({ domain: domainToScan, mode: scanMode })
       });
 
       const data = await res.json();
@@ -235,12 +340,17 @@ const Scanner = () => {
         throw new Error(data?.detail || `Scan request failed with status ${res.status}`);
       }
 
-      setScanResult(data);
-      localStorage.setItem('lastScanDomain', target.trim());
-      if (data?.id) {
-        localStorage.setItem('lastScanAssetId', String(data.id));
+      if (!data?.job_id) {
+        throw new Error('Scan job was created without a job id');
       }
-      setToastMsg(`Scan Completed: ${target}`);
+
+      setScanJobId(String(data.job_id));
+      localStorage.setItem(SCAN_JOB_STORAGE_KEY, String(data.job_id));
+      localStorage.setItem(SCAN_DOMAIN_STORAGE_KEY, domainToScan);
+      localStorage.setItem('lastScanDomain', domainToScan);
+      localStorage.setItem('scannerPendingJobStartTime', String(Date.now()));
+
+      setToastMsg(`Scan queued: ${domainToScan}`);
       setShowToast(true);
       setTimeout(() => setShowToast(false), 4000);
     } catch (err: any) {
@@ -249,7 +359,6 @@ const Scanner = () => {
       setToastMsg(`Unable to complete scan for ${target}: ${errorMessage}`);
       setShowToast(true);
       setTimeout(() => setShowToast(false), 4000);
-    } finally {
       setIsScanning(false);
     }
   };
@@ -336,14 +445,22 @@ const Scanner = () => {
             >
               Export Report
             </button>
-            <button 
-              onClick={handleScan}
-              disabled={isScanning}
-              className={`px-5 py-2.5 bg-gradient-to-br from-primary to-primary-container text-white rounded font-bold text-sm shadow-sm flex items-center gap-2 transition-all ${isScanning ? 'opacity-50 cursor-not-allowed' : 'active:scale-95'}`}
-            >
-              <span className="material-symbols-outlined text-sm flex items-center">{isScanning ? 'sync' : 'play_arrow'}</span>
-              {isScanning ? 'Scanning...' : 'Start Scan'}
-            </button>
+            <div className="flex flex-col items-end gap-1">
+              {isScanning && scanJobId && (
+                <span className="text-[10px] font-bold text-tertiary uppercase tracking-wider flex items-center gap-1">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-tertiary animate-pulse"></span>
+                  Job running — safe to navigate away
+                </span>
+              )}
+              <button
+                onClick={isScanning ? undefined : handleScan}
+                disabled={isScanning}
+                className={`px-5 py-2.5 bg-gradient-to-br from-primary to-primary-container text-white rounded font-bold text-sm shadow-sm flex items-center gap-2 transition-all ${isScanning ? 'opacity-50 cursor-not-allowed' : 'active:scale-95'}`}
+              >
+                <span className={`material-symbols-outlined text-sm flex items-center ${isScanning ? 'animate-spin' : ''}`}>{isScanning ? 'sync' : 'play_arrow'}</span>
+                {isScanning ? 'Scanning...' : 'Start Scan'}
+              </button>
+            </div>
           </div>
         </div>
 
@@ -381,34 +498,96 @@ const Scanner = () => {
                   <p className="text-[0.625rem] uppercase font-bold tracking-wider text-on-surface-variant">Previous Scan Results</p>
                   {historyLoading && <span className="text-[10px] text-on-surface-variant">Loading...</span>}
                 </div>
-                {scanHistory.length === 0 ? (
-                  <p className="text-xs text-on-surface-variant">No saved scans found for this domain yet.</p>
+                {!hasPermission('can_view_history') ? (
+                  <p className="text-xs text-on-surface-variant flex items-center gap-1">
+                    <span className="material-symbols-outlined text-[14px]">lock</span>
+                    History access restricted by your role. Contact Super Admin.
+                  </p>
                 ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    {scanHistory.slice(0, 8).map((row) => (
-                      <button
-                        key={row.asset_id || row.report_id}
-                        onClick={() => row.asset_id && loadAssetById(String(row.asset_id))}
-                        className="text-left rounded-md bg-surface-container-highest px-3 py-2 hover:bg-surface-container-high transition-colors"
-                      >
-                        <p className="text-xs font-semibold text-on-surface">{row.timestamp ? new Date(row.timestamp).toLocaleString() : row.report_id}</p>
-                        <p className="text-[11px] text-on-surface-variant">{row.risk_level} • Score {row.score}</p>
-                      </button>
-                    ))}
+                <>{scanHistory.length === 0 ? (
+                  <p className="text-xs text-on-surface-variant">
+                    {target.trim() ? 'No saved scans found for this domain yet.' : 'No saved scans found yet.'}
+                  </p>
+                ) : (
+                  <div className="space-y-4">
+                    <div>
+                      <p className="text-[10px] uppercase tracking-wider text-on-surface-variant font-bold mb-2">Top Recent (4)</p>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                        {topHistoryEntries.map((row: any) => {
+                          const ts = row?.timestamp ? new Date(row.timestamp) : null;
+                          const validTs = ts && !Number.isNaN(ts.getTime());
+                          const title = `${row?.domain || 'Unknown Domain'} • ${validTs ? ts.toLocaleString() : (row?.report_id || 'Unknown Time')}`;
+                          return (
+                            <button
+                              key={row.asset_id || row.report_id}
+                              onClick={() => row.asset_id && loadAssetById(String(row.asset_id))}
+                              className="text-left rounded-md bg-surface-container-highest px-3 py-2 hover:bg-surface-container-high transition-colors"
+                            >
+                              <p className="text-xs font-semibold text-on-surface truncate" title={title}>{title}</p>
+                              <p className="text-[11px] text-on-surface-variant">{row.risk_level} • Score {row.score} • {row.algorithm || 'N/A'}</p>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {archivedHistoryByMonth.length > 0 && (
+                      <div>
+                        <p className="text-[10px] uppercase tracking-wider text-on-surface-variant font-bold mb-2">Archive By Month</p>
+                        <div className="space-y-3 max-h-64 overflow-y-auto pr-1">
+                          {archivedHistoryByMonth.map((group, idx) => (
+                            <details key={`${group.label}-${idx}`} className="rounded-md border border-outline-variant/20 bg-surface-container-highest px-3 py-2" open={idx === 0}>
+                              <summary className="cursor-pointer text-xs font-bold text-on-surface flex items-center justify-between">
+                                <span>{group.label}</span>
+                                <span className="text-[10px] text-on-surface-variant">{group.rows.length} scans</span>
+                              </summary>
+                              <div className="mt-2 grid grid-cols-1 gap-2">
+                                {group.rows.map((row: any) => {
+                                  const ts = row?.timestamp ? new Date(row.timestamp) : null;
+                                  const validTs = ts && !Number.isNaN(ts.getTime());
+                                  const dayLabel = validTs ? ts.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' }) : 'Unknown Date';
+                                  const timeLabel = validTs ? ts.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : 'Unknown Time';
+                                  return (
+                                    <button
+                                      key={row.asset_id || row.report_id}
+                                      onClick={() => row.asset_id && loadAssetById(String(row.asset_id))}
+                                      className="text-left rounded bg-surface-container-low px-3 py-2 hover:bg-surface-container transition-colors"
+                                    >
+                                      <p className="text-xs font-semibold text-on-surface truncate">{row?.domain || 'Unknown Domain'}</p>
+                                      <p className="text-[11px] text-on-surface-variant">{dayLabel} • {timeLabel} • {row.risk_level} • Score {row.score}</p>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </details>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
+                </>)}
               </div>
             </div>
 
             {/* Results Panel */}
             <div className={`bg-surface-container-lowest rounded-xl p-8 shadow-sm ${!scanResult && !isScanning ? 'opacity-50 pointer-events-none' : ''}`}>
-              <div className="flex items-center justify-between mb-8">
+              <div className="flex items-center justify-between mb-2">
                 <h3 className="text-sm font-bold uppercase tracking-wider text-on-surface-variant">Live Analysis Results</h3>
                 <div className="flex items-center gap-2 text-[0.6875rem] font-bold py-1 px-3 bg-tertiary/10 text-tertiary rounded-full uppercase">
                   <span className={`w-1.5 h-1.5 bg-tertiary rounded-full ${isScanning ? 'animate-pulse' : ''}`}></span>
                   {isScanning ? 'Scanning...' : scanResult ? 'Analysis Complete' : 'Waiting for Input'}
                 </div>
               </div>
+              {(scanResult?.name || (isScanning && target)) && (
+                <div className="mb-6 flex items-center gap-2">
+                  <span className="material-symbols-outlined text-primary text-[18px]">language</span>
+                  <span className="text-lg font-bold text-on-surface tracking-tight">{scanResult?.name || target}</span>
+                  {scanResult?.scan_result?.ipv4 && scanResult.scan_result.ipv4 !== '0.0.0.0' && (
+                    <span className="text-[11px] text-on-surface-variant font-mono bg-surface-container-highest px-2 py-0.5 rounded">{scanResult.scan_result.ipv4}</span>
+                  )}
+                </div>
+              )}
 
               <div className="mb-6 flex items-start gap-2 rounded-lg border border-outline-variant/30 bg-surface-container-low px-3 py-2">
                 <span className={`mt-1 h-2 w-2 rounded-full ${handshakeStatus.dotClass}`}></span>
@@ -424,10 +603,19 @@ const Scanner = () => {
                 <div className="bg-surface-container-low rounded-lg p-5">
                   <p className="text-[0.6875rem] font-bold text-on-surface-variant uppercase tracking-widest mb-2">Protocol</p>
                   <div className="flex items-baseline justify-between">
-                    <span className="text-xl font-bold text-on-surface">{scanResult?.scan_result?.tls_version || '---'}</span>
+                    <span className="text-xl font-bold text-on-surface">
+                      {(() => {
+                        const list: string[] = scanResult?.scan_result?.tls_versions_list || [];
+                        if (list.length > 1) return list.join(' + ');
+                        return scanResult?.scan_result?.tls_version || '---';
+                      })()}
+                    </span>
                     <span className="text-[0.625rem] font-bold py-0.5 px-2 bg-tertiary text-white rounded">SECURE</span>
                   </div>
-                  <div className="mt-4 h-1 w-full bg-surface-variant rounded-full overflow-hidden">
+                  {(scanResult?.scan_result?.tls_versions_list?.length ?? 0) > 1 && (
+                    <p className="text-[10px] text-on-surface-variant mt-2">Negotiated: {scanResult?.scan_result?.tls_version}</p>
+                  )}
+                  <div className="mt-3 h-1 w-full bg-surface-variant rounded-full overflow-hidden">
                     <div className="h-full bg-tertiary w-full"></div>
                   </div>
                 </div>
@@ -511,7 +699,30 @@ const Scanner = () => {
                     <span className="text-xl font-bold text-tertiary">{scanResult?.risk?.label || '---'}</span>
                     <span className={`text-[0.625rem] font-bold py-0.5 px-2 ${scanResult?.risk?.status === 'Secure' ? 'bg-tertiary' : 'bg-error'} text-white rounded`}>{scanResult?.risk?.status?.toUpperCase() || '---'}</span>
                   </div>
-                  <p className="text-[0.65rem] text-on-surface-variant mt-2 truncate">Analysis of algorithm {scanResult?.scan_result?.algorithm || ''}</p>
+                  {scanResult?.scan_result?.pqc_kem_detected && (
+                    <div className="mt-2 flex items-center gap-2 flex-wrap">
+                      {(() => {
+                        const conf: number = scanResult?.scan_result?.pqc_detection_confidence ?? 0;
+                        const method: string = scanResult?.scan_result?.pqc_detection_method ?? '';
+                        const label = method.includes('observed') ? 'Observed' : method.includes('cdn') ? 'Inferred' : 'Detected';
+                        const confPct = Math.round(conf * 100);
+                        const color = conf >= 0.9 ? 'bg-tertiary/15 text-tertiary' : conf >= 0.75 ? 'bg-secondary/15 text-secondary' : 'bg-surface-container-highest text-on-surface-variant';
+                        return (
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${color}`} title={method}>
+                            {label} · {confPct}% confidence
+                          </span>
+                        );
+                      })()}
+                    </div>
+                  )}
+                  {scanResult?.scan_result?.pqc_client_compatibility && (
+                    <p className="text-[10px] text-on-surface-variant mt-2 leading-relaxed">
+                      <span className="font-bold">Client support: </span>{scanResult.scan_result.pqc_client_compatibility}
+                    </p>
+                  )}
+                  {!scanResult?.scan_result?.pqc_kem_detected && scanResult && (
+                    <p className="text-[10px] text-on-surface-variant mt-2">No PQC KEM detected across 3 probe methods.</p>
+                  )}
                 </div>
                 
                 {/* 8. Crypto Migration Path */}
@@ -570,10 +781,22 @@ const Scanner = () => {
                       <p className="text-[0.6875rem] font-bold text-on-surface-variant uppercase tracking-widest">Subdomain Discovery</p>
                       <h4 className="text-sm font-bold text-on-surface mt-1">{scanResult?.name || target} - Subdomain Inventory</h4>
                     </div>
-                    <div className="grid grid-cols-2 gap-2 text-[11px]">
-                      <div className="px-3 py-2 rounded bg-surface-container-highest">Total: <span className="font-bold">{subdomainRows.length}</span></div>
+                    <div className="grid grid-cols-2 lg:grid-cols-3 gap-2 text-[11px]">
+                      <div className="px-3 py-2 rounded bg-surface-container-highest">Discovered: <span className="font-bold">{scanResult?.scan_result?.subdomains_discovery?.summary?.total_discovered_subdomains ?? subdomainRows.length}</span></div>
                       <div className="px-3 py-2 rounded bg-surface-container-highest">Showing: <span className="font-bold">{Math.min((subdomainPage + 1) * subdomainPageSize, filteredSubdomainRows.length)}</span></div>
+                      <div className="px-3 py-2 rounded bg-surface-container-highest">Scanned: <span className="font-bold">{subdomainRows.length}</span></div>
                     </div>
+                    {scanResult?.scan_result?.subdomains_discovery?.summary?.discovery_sources && (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {Object.entries(scanResult.scan_result.subdomains_discovery.summary.discovery_sources as Record<string,number>)
+                          .filter(([,v]) => (v as number) > 0)
+                          .map(([source, count]) => (
+                            <span key={source} className="text-[10px] px-2 py-0.5 rounded bg-primary/10 text-primary font-semibold">
+                              {source}: {String(count)}
+                            </span>
+                          ))}
+                      </div>
+                    )}
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4">
@@ -754,7 +977,8 @@ const Scanner = () => {
 
           {/* Sidebar Content: Scheduling & History */}
           <aside className="col-span-12 lg:col-span-4 space-y-8">
-            {/* Auto Scheduling Section */}
+            {/* Auto Scheduling Section — hidden when role lacks permission */}
+            {hasPermission('can_schedule_scans') && (
             <div className="bg-surface-container-lowest rounded-xl p-6 shadow-sm border border-transparent">
               <div className="flex items-center gap-3 mb-6">
                 <span className="material-symbols-outlined text-primary flex items-center">calendar_month</span>
@@ -835,18 +1059,19 @@ const Scanner = () => {
                 {isScheduling ? 'Scheduling...' : 'Auto Schedule Scan'}
               </button>
             </div>
+            )}
 
             {/* Risk Formula Transparency */}
             <div className="bg-surface-container-lowest rounded-xl p-6 shadow-sm border border-outline-variant/20">
               <h3 className="text-sm font-bold uppercase tracking-wider text-on-surface mb-4">Risk Formula Transparency</h3>
               <div className="space-y-4 text-xs text-on-surface-variant">
                 <div className="bg-surface-container-low rounded p-3 border border-outline-variant/20">
-                  <p className="font-bold text-on-surface mb-2">Core Score Formula</p>
+                  <p className="font-bold text-on-surface mb-2">Core Score Formula (v3 PQC-centric)</p>
                   <div className="font-mono text-[11px] leading-6 bg-surface-container-highest rounded p-3 border border-outline-variant/20">
-                    <p>Total Penalty = (w1 x Crypto) + (w2 x Protocol) + (w3 x Vulnerability) + (w4 x Exposure) + (w5 x Third-Party) + (w6 x Governance)</p>
-                    <p className="mt-2">Score (raw) = max(0, 100 - Total Penalty)</p>
-                    <p className="mt-2">Final Score applies post-rules: PQC floor and expired certificate cap.</p>
-                    <p className="mt-2 text-[10px]">Formula Version: {scanResult?.risk?.formula_version || 'v2-6factor-weighted-penalty'}</p>
+                    <p>Score = 100 − Σ(weight × factor_risk)</p>
+                    <p className="mt-2">KEM 35% + Cert Algo 25% + Protocol 15% + Cert Health 10% + Vulns 10% + Exposure 5%</p>
+                    <p className="mt-2">Post-rules: PQC floor (hybrid≥68, full≥80), expired cert cap (≤15).</p>
+                    <p className="mt-2 text-[10px]">Formula Version: {scanResult?.risk?.formula_version || 'v3-pqc-centric'}</p>
                   </div>
                 </div>
 
@@ -880,24 +1105,31 @@ const Scanner = () => {
                 </div>
 
                 <div className="bg-surface-container-low rounded p-3 border border-outline-variant/20">
-                  <p className="font-bold text-on-surface mb-2">Crypto Risk Rules</p>
-                  <p>RSA adds +60. ECC/ECDSA adds +30.</p>
-                  <p>RSA key penalties: &lt;2048 adds +40, 2048 adds +20.</p>
-                  <p>ECC key penalties: &lt;224 adds +40, &lt;256 adds +20.</p>
+                  <p className="font-bold text-on-surface mb-2">KEM Rules (35% weight — primary quantum threat)</p>
+                  <p>Full PQC KEM (MLKEM-768/1024): 0 penalty — session is quantum-safe.</p>
+                  <p>Hybrid PQC KEM (X25519MLKEM768 / X25519Kyber768): 5 penalty — quantum-safe + classical fallback.</p>
+                  <p>No PQC KEM: 100 penalty — vulnerable to harvest-now-decrypt-later attacks.</p>
                 </div>
 
                 <div className="bg-surface-container-low rounded p-3 border border-outline-variant/20">
-                  <p className="font-bold text-on-surface mb-2">Protocol Risk Rules</p>
-                  <p>If TLS 1.1/1.0 present -&gt; Protocol Risk = 100.</p>
-                  <p>If TLS 1.2 + 1.3 together -&gt; Protocol Risk = 60 (dual compatibility penalty).</p>
-                  <p>If only TLS 1.2 -&gt; Protocol Risk = 50. If only TLS 1.3 -&gt; Protocol Risk = 0.</p>
+                  <p className="font-bold text-on-surface mb-2">Certificate Algorithm Rules (25% weight)</p>
+                  <p>PQC cert (ML-DSA / Dilithium / Falcon): 0 penalty.</p>
+                  <p>RSA 2048: 80 penalty. RSA &lt;2048: 100 penalty. RSA &gt;2048: 60 penalty.</p>
+                  <p>ECC P-256+: 30 penalty. ECC &lt;224-bit: 70 penalty.</p>
+                </div>
+
+                <div className="bg-surface-container-low rounded p-3 border border-outline-variant/20">
+                  <p className="font-bold text-on-surface mb-2">Protocol Rules (15% weight)</p>
+                  <p>TLS 1.3 only: 0 penalty (required for PQC KEMs).</p>
+                  <p>TLS 1.3 + 1.2: 10 penalty (minor downgrade risk).</p>
+                  <p>TLS 1.2 only: 50 penalty. TLS 1.0/1.1: 100 penalty (broken).</p>
                 </div>
 
                 <div className="bg-surface-container-low rounded p-3 border border-outline-variant/20">
                   <p className="font-bold text-on-surface mb-2">Risk Bands</p>
-                  <p>Score &gt;= 80: Low (PQC Ready)</p>
-                  <p>60-79: Medium (Quantum Safe)</p>
-                  <p>40-59: High (Needs Upgrade)</p>
+                  <p>Score ≥ 80: Low (PQC Ready)</p>
+                  <p>60–79: Medium (Quantum Safe)</p>
+                  <p>40–59: High (Needs Upgrade)</p>
                   <p>&lt;40: Critical (Not Safe)</p>
                 </div>
 
