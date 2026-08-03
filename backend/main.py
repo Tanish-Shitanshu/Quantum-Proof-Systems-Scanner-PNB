@@ -186,9 +186,12 @@ def _get_scan_job(job_id: str) -> Optional[dict]:
     return None
 
 # Setup CORS for Frontend
+# In production, set CORS_ALLOWED_ORIGINS env var to a comma-separated list.
+_raw_origins = os.getenv("CORS_ALLOWED_ORIGINS", "*")
+_allowed_origins: list = ["*"] if _raw_origins.strip() == "*" else [o.strip() for o in _raw_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # For hackathon demo
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -489,7 +492,7 @@ def get_dashboard_metrics():
     high_risk_assets = [a for a in assets if a.get("risk", {}).get("risk_level") == "High"]
     
     # Expiring within 30 days or already expired
-    expiring_certs = [a for a in assets if a.get("scan_result", {}).get("days_to_expiry", 999) < 30]
+    expiring_certs = [a for a in assets if isinstance(a.get("scan_result", {}).get("days_to_expiry"), int) and a["scan_result"]["days_to_expiry"] < 30]
 
     pqc_ready_count = sum(1 for a in assets if str(a.get("risk", {}).get("label", "")).upper() == "PQC READY")
     pqc_readiness_pct = int((pqc_ready_count / total_assets) * 100) if total_assets > 0 else 0
