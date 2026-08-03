@@ -66,7 +66,7 @@ const Dashboard = () => {
             Refresh
           </button>
           <button
-            onClick={() => window.open(apiBase + '/api/reports/download?x_user_role=Super%20Admin', '_blank')}
+            onClick={() => { const r = localStorage.getItem('userRole') || 'User'; if (r !== 'Super Admin') { alert('Only Super Admin can export the full CISO report.'); return; } window.open(apiBase + '/api/reports/download?x_user_role=' + encodeURIComponent(r), '_blank'); }}
             className="flex items-center justify-center gap-2 px-6 py-2.5 bg-gradient-to-br from-primary to-primary-container text-white rounded-lg text-sm font-bold shadow-md shadow-primary/20 hover:scale-105 active:scale-95 transition-all"
           >
             <span className="material-symbols-outlined text-[18px]" data-icon="download">download</span>
