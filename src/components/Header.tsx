@@ -31,13 +31,18 @@ const Header = ({ setSidebarOpen, onSwitchAccount }: HeaderProps) => {
   }, []);
 
   useEffect(() => {
-    fetch(apiBase + '/api/risk')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        const pct = data?.summary?.pqc_readiness_pct;
-        if (typeof pct === 'number') setPqcReadiness(pct);
-      })
-      .catch(() => undefined);
+    const fetchPqc = () =>
+      fetch(apiBase + '/api/risk')
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          const pct = data?.summary?.pqc_readiness_pct;
+          if (typeof pct === 'number') setPqcReadiness(pct);
+        })
+        .catch(() => undefined);
+    fetchPqc();
+    // Refresh PQC readiness every 30s so it stays accurate after scans complete.
+    const interval = setInterval(fetchPqc, 30_000);
+    return () => clearInterval(interval);
   }, [apiBase]);
 
   return (

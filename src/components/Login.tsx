@@ -178,7 +178,7 @@ export default function Login({ onLogin }: { onLogin: (session: AuthSession) => 
               {loading ? (mode === 'otp' ? 'Sending OTP...' : 'Signing In...') : (mode === 'otp' ? 'Sign In with OTP' : 'Direct Login')} <span className="material-symbols-outlined text-[18px]">lock_open</span>
             </button>
             <div className="rounded-xl bg-surface-container-highest p-3 text-[11px] text-on-surface-variant leading-relaxed border border-outline-variant/20">
-              Demo credentials: super admin <b>admin@quantumshield.local / Admin@123</b>, admin <b>j.doe@quantumshield.local / Admin@123</b>, user <b>guest@quantumshield.local / User@123</b>.
+              Select your role above and use <b>Direct Login</b> for demo access, or switch to <b>OTP Login</b> for full authentication.
             </div>
             {errorMsg && <p className="text-error text-xs font-bold text-center mt-2">{errorMsg}</p>}
           </form>

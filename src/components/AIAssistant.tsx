@@ -1,6 +1,8 @@
 import { useRef, useState } from 'react';
+import { hasPermission } from './Settings';
 
 const AIAssistant = () => {
+  const canUseAI = hasPermission('can_use_ai');
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [showToast, setShowToast] = useState(false);
@@ -108,6 +110,18 @@ const AIAssistant = () => {
       handleSend();
     }
   };
+
+  if (!canUseAI) {
+    return (
+      <main className="md:ml-64 pt-24 pb-12 px-8 flex items-center justify-center min-h-screen">
+        <div className="bg-surface-container-lowest rounded-2xl p-12 shadow-sm border border-outline-variant/10 text-center max-w-md">
+          <span className="material-symbols-outlined text-5xl text-on-surface-variant mb-4 block">lock</span>
+          <h2 className="text-lg font-bold text-on-surface mb-2">AI Assistant Access Restricted</h2>
+          <p className="text-sm text-on-surface-variant">Your role does not have permission to use the AI Assistant. Contact your Super Admin to request access.</p>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <div className="flex-1">

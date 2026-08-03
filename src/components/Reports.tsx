@@ -87,7 +87,8 @@ const Reports = () => {
       }
     };
 
-    loadHistory();
+    const t = setTimeout(loadHistory, historyFilter ? 500 : 0);
+    return () => clearTimeout(t);
   }, [apiBase, historyFilter, role]);
 
   const handleSendDomainReport = async () => {
