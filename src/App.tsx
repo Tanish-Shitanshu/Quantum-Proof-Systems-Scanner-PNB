@@ -12,6 +12,7 @@ import CyberRating from './components/CyberRating';
 import Reports from './components/Reports';
 import Login from './components/Login';
 import MythosDefense from './components/MythosDefense';
+import Settings from './components/Settings';
 import { useState } from 'react';
 
 type AuthSession = {
@@ -63,6 +64,7 @@ function App() {
           <Route path="/pqc-posture" element={<PqcPosture />} />
           <Route path="/cyber-rating" element={<CyberRating />} />
           <Route path="/mythos-defense" element={<MythosDefense />} />
+          <Route path="/settings" element={<Settings />} />
           <Route path="/reports" element={<Reports />} />
           <Route path="/ai-assistant" element={<AIAssistant />} />
           <Route path="*" element={<Dashboard />} />
