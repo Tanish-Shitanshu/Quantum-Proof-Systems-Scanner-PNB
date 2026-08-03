@@ -8,6 +8,7 @@ def calculate_advanced_risk(
     has_owner: bool = True,
     pqc_kem_detected: bool = False,
     pqc_status: str = "None",
+    exposure_context: dict | None = None,
 ) -> dict:
     """Mathematical Risk Engine and Classification based on feedback.md."""
     weights = {
@@ -88,8 +89,21 @@ def calculate_advanced_risk(
             vuln_risk = max(vuln_risk, 50)
 
     # 4. Exposure Risk (max 100)
-    # Assume 80% if it's external domain, 0% if internal. For now, flat 50 for mock
-    exposure_risk = 50
+    # Lightweight dynamic heuristic to avoid static scoring while keeping behavior stable.
+    exposure_context = exposure_context or {}
+    public_target = bool(exposure_context.get("public_target", False))
+    active_subdomains = int(exposure_context.get("active_subdomains", 0) or 0)
+    high_sev_vulns = int(exposure_context.get("high_severity_vuln_count", 0) or 0)
+
+    hosting_type = str((hosting or {}).get("type", "")).lower()
+    base_exposure = 45 if public_target else 25
+    if hosting_type == "third_party":
+        base_exposure += 5
+
+    exposure_risk = base_exposure
+    exposure_risk += min(active_subdomains * 0.5, 15)
+    exposure_risk += min(high_sev_vulns * 3, 15)
+    exposure_risk = int(max(0, min(100, round(exposure_risk))))
 
     # 5. Third Party Risk (max 100)
     third_party_risk = 100 if hosting.get("type") == "third_party" else 0

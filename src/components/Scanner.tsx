@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 const Scanner = () => {
+  const [searchParams] = useSearchParams();
   const [target, setTarget] = useState("");
   const [isScanning, setIsScanning] = useState(false);
   const [scanResult, setScanResult] = useState<any>(null);
+  const [scanHistory, setScanHistory] = useState<any[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [showToast, setShowToast] = useState(false);
   const [toastMsg, setToastMsg] = useState("");
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
@@ -19,6 +23,66 @@ const Scanner = () => {
   const [scanMode, setScanMode] = useState<'Full Deep Scan' | 'Quick Scan'>('Full Deep Scan');
   const role = localStorage.getItem('userRole') || 'User';
   const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
+  const loadAssetById = async (assetId: string) => {
+    const res = await fetch(`${apiBase}/api/assets/${encodeURIComponent(assetId)}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    setScanResult(data);
+    if (data?.name) {
+      setTarget(data.name);
+      localStorage.setItem('lastScanDomain', data.name);
+    }
+    if (data?.id) {
+      localStorage.setItem('lastScanAssetId', String(data.id));
+    }
+  };
+
+  useEffect(() => {
+    const initialAssetId = searchParams.get('assetId') || localStorage.getItem('lastScanAssetId');
+    const initialDomain = searchParams.get('domain') || localStorage.getItem('lastScanDomain');
+
+    if (initialAssetId) {
+      loadAssetById(initialAssetId).catch(() => undefined);
+      return;
+    }
+
+    if (!initialDomain) return;
+    setTarget(initialDomain);
+    fetch(`${apiBase}/api/reports/website?domain=${encodeURIComponent(initialDomain)}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((payload) => {
+        if (payload?.website) {
+          setScanResult(payload.website);
+        }
+      })
+      .catch(() => undefined);
+  }, [apiBase, searchParams]);
+
+  useEffect(() => {
+    const trimmed = target.trim();
+    if (!trimmed || !trimmed.includes('.')) {
+      setScanHistory([]);
+      return;
+    }
+
+    setHistoryLoading(true);
+    fetch(`${apiBase}/api/reports/history?domain=${encodeURIComponent(trimmed)}&limit=25`, {
+      headers: {
+        'x-user-role': role,
+      },
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          setScanHistory([]);
+          return;
+        }
+        const data = await res.json();
+        setScanHistory(Array.isArray(data?.data) ? data.data : []);
+      })
+      .catch(() => setScanHistory([]))
+      .finally(() => setHistoryLoading(false));
+  }, [apiBase, role, target]);
 
   const mobileApps = useMemo(() => scanResult?.scan_result?.mobile_info?.apps || [], [scanResult]);
   const topMobileMatch = scanResult?.scan_result?.mobile_info?.most_relevant_app;
@@ -172,6 +236,10 @@ const Scanner = () => {
       }
 
       setScanResult(data);
+      localStorage.setItem('lastScanDomain', target.trim());
+      if (data?.id) {
+        localStorage.setItem('lastScanAssetId', String(data.id));
+      }
       setToastMsg(`Scan Completed: ${target}`);
       setShowToast(true);
       setTimeout(() => setShowToast(false), 4000);
@@ -306,6 +374,29 @@ const Scanner = () => {
                   <option value="Full Deep Scan">Full Deep Scan</option>
                   <option value="Quick Scan">Quick Scan</option>
                 </select>
+              </div>
+
+              <div className="mt-4 rounded-lg border border-outline-variant/20 bg-surface-container-low p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-[0.625rem] uppercase font-bold tracking-wider text-on-surface-variant">Previous Scan Results</p>
+                  {historyLoading && <span className="text-[10px] text-on-surface-variant">Loading...</span>}
+                </div>
+                {scanHistory.length === 0 ? (
+                  <p className="text-xs text-on-surface-variant">No saved scans found for this domain yet.</p>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    {scanHistory.slice(0, 8).map((row) => (
+                      <button
+                        key={row.asset_id || row.report_id}
+                        onClick={() => row.asset_id && loadAssetById(String(row.asset_id))}
+                        className="text-left rounded-md bg-surface-container-highest px-3 py-2 hover:bg-surface-container-high transition-colors"
+                      >
+                        <p className="text-xs font-semibold text-on-surface">{row.timestamp ? new Date(row.timestamp).toLocaleString() : row.report_id}</p>
+                        <p className="text-[11px] text-on-surface-variant">{row.risk_level} • Score {row.score}</p>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -519,6 +610,7 @@ const Scanner = () => {
                       <thead className="bg-surface-container-highest sticky top-0">
                         <tr>
                           <th className="px-3 py-2 text-[10px] uppercase tracking-wider text-on-surface-variant font-bold whitespace-nowrap">Subdomain</th>
+                          <th className="px-3 py-2 text-[10px] uppercase tracking-wider text-on-surface-variant font-bold whitespace-nowrap">IP</th>
                           <th className="px-3 py-2 text-[10px] uppercase tracking-wider text-on-surface-variant font-bold whitespace-nowrap">Status</th>
                           <th className="px-3 py-2 text-[10px] uppercase tracking-wider text-on-surface-variant font-bold whitespace-nowrap">Criteria</th>
                           <th className="px-3 py-2 text-[10px] uppercase tracking-wider text-on-surface-variant font-bold whitespace-nowrap">SSL ⭐</th>
@@ -537,12 +629,13 @@ const Scanner = () => {
                       <tbody>
                         {pagedSubdomainRows.length === 0 ? (
                           <tr>
-                            <td className="px-3 py-6 text-sm text-on-surface-variant" colSpan={14}>No subdomains match current filters.</td>
+                            <td className="px-3 py-6 text-sm text-on-surface-variant" colSpan={15}>No subdomains match current filters.</td>
                           </tr>
                         ) : (
                           pagedSubdomainRows.map((row: any, idx: number) => (
                             <tr key={`${row.subdomain}-${idx}`} className="border-t border-outline-variant/10 hover:bg-surface-container-highest/50 transition-colors">
                               <td className="px-3 py-2 text-xs font-medium text-on-surface whitespace-nowrap">{row.subdomain || 'N/A'}</td>
+                              <td className="px-3 py-2 text-xs text-on-surface-variant font-mono whitespace-nowrap">{row.ipv4 || row.ipv6 || 'N/A'}</td>
                               <td className="px-3 py-2 text-xs whitespace-nowrap">
                                 <span className={`px-2 py-1 rounded font-bold text-xs ${row.status === 'active' ? 'bg-tertiary/15 text-tertiary' : 'bg-error/15 text-error'}`}>
                                   {row.status || 'unknown'}

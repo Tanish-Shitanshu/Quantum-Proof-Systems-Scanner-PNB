@@ -150,6 +150,20 @@ Without valid SMTP credentials, email dispatch endpoints cannot send report emai
 
 ---
 
+## Production Hosting Path
+
+For non-local deployment, queued scan workers, and persistence setup, use:
+
+- `Documentation/production_deployment.md`
+
+New async scan queue APIs:
+
+1. `POST /api/scan/async`
+2. `GET /api/scan/jobs/{job_id}`
+3. `GET /api/scan/jobs`
+
+---
+
 *“To defend against the cryptography of tomorrow, you must adapt today.”*
 
 <br><br><br>

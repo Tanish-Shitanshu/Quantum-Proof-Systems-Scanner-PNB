@@ -8,6 +8,8 @@ interface HeaderProps {
 const Header = ({ setSidebarOpen, onSwitchAccount }: HeaderProps) => {
   const [role, setRole] = useState(() => localStorage.getItem('userRole') || 'User');
   const [displayName, setDisplayName] = useState('Guest Viewer');
+  const [pqcReadiness, setPqcReadiness] = useState<number | null>(null);
+  const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
   useEffect(() => {
     const syncSession = () => {
@@ -28,6 +30,16 @@ const Header = ({ setSidebarOpen, onSwitchAccount }: HeaderProps) => {
     return () => window.removeEventListener('storage', syncSession);
   }, []);
 
+  useEffect(() => {
+    fetch(apiBase + '/api/risk')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        const pct = data?.summary?.pqc_readiness_pct;
+        if (typeof pct === 'number') setPqcReadiness(pct);
+      })
+      .catch(() => undefined);
+  }, [apiBase]);
+
   return (
     <header className="fixed top-0 right-0 left-0 md:left-64 h-16 bg-white/80 backdrop-blur-md flex items-center justify-between px-4 md:px-8 z-40 border-b border-slate-100/50">
       <div className="flex items-center gap-2 md:gap-4">
@@ -39,7 +51,7 @@ const Header = ({ setSidebarOpen, onSwitchAccount }: HeaderProps) => {
           <input className="bg-slate-50 border-none rounded-full pl-10 pr-4 py-2 text-sm w-64 focus:ring-2 focus:ring-primary/20 transition-all sm:w-64" placeholder="Quantum search..." type="text"/>
         </div>
         <div className="h-6 w-px bg-slate-200 mx-2"></div>
-        <span className="text-blue-700 font-bold text-sm">PQC Readiness: 98%</span>
+        <span className="text-blue-700 font-bold text-sm">PQC Readiness: {pqcReadiness ?? '--'}%</span>
       </div>
 
       <div className="flex items-center gap-4">

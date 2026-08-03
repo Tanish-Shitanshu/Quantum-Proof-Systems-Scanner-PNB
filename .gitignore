@@ -22,3 +22,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Python runtime artifacts
+**/__pycache__/
+*.pyc
+
+# Local runtime persistence
+backend/data/runtime_state.json

@@ -4,8 +4,6 @@ import socket
 import ssl
 import time
 import re
-import shutil
-import subprocess
 from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -275,22 +273,52 @@ def _normalize_discovered_name(hostname: str, root_domain: str) -> Optional[str]
 
 def _discover_subdomains_from_crtsh(domain: str) -> set:
     discovered = set()
-    try:
-        url = f"https://crt.sh/?q=%.{domain}&output=json"
-        response = requests.get(url, timeout=12, headers={"User-Agent": "QuantumShieldScanner/1.0"})
-        if response.status_code == 200 and response.text.strip():
+    url = f"https://crt.sh/?q=%.{domain}&output=json"
+    timeouts = [12, 25]
+
+    for timeout in timeouts:
+        try:
+            response = requests.get(url, timeout=timeout, headers={"User-Agent": "QuantumShieldScanner/1.0"})
+            if response.status_code != 200 or not response.text.strip():
+                continue
             try:
                 data = response.json()
-                for entry in data:
-                    name_values = entry.get("name_value", "")
-                    for name_value in name_values.splitlines():
-                        normalized = _normalize_discovered_name(name_value, domain)
-                        if normalized:
-                            discovered.add(normalized)
             except ValueError:
-                pass
+                continue
+
+            for entry in data:
+                name_values = entry.get("name_value", "")
+                for name_value in name_values.splitlines():
+                    normalized = _normalize_discovered_name(name_value, domain)
+                    if normalized:
+                        discovered.add(normalized)
+
+            if discovered:
+                break
+        except requests.RequestException:
+            continue
+
+    return discovered
+
+
+def _discover_subdomains_from_hackertarget(domain: str) -> set:
+    discovered = set()
+    url = f"https://api.hackertarget.com/hostsearch/?q={domain}"
+    try:
+        response = requests.get(url, timeout=10, headers={"User-Agent": "QuantumShieldScanner/1.0"})
+        if response.status_code != 200 or not response.text:
+            return discovered
+
+        for line in response.text.splitlines():
+            if not line or "," not in line:
+                continue
+            hostname = line.split(",", 1)[0].strip()
+            normalized = _normalize_discovered_name(hostname, domain)
+            if normalized:
+                discovered.add(normalized)
     except requests.RequestException:
-        pass
+        return discovered
+
     return discovered
 
 
@@ -1125,6 +1153,7 @@ def get_subdomain_scan_data(
     is_active, handshake_data = attempt_ssl_handshake(subdomain, port, detect_pqc=detect_pqc)
 
     if is_active:
+        sub_ipv4, sub_ipv6 = _resolve_ips(subdomain)
         supported_tls_versions = []
         if probe_all_tls_versions:
             supported_tls_versions = _probe_tls_versions(subdomain, port)
@@ -1149,6 +1178,8 @@ def get_subdomain_scan_data(
             "days_to_expiry": days_to_expiry,
             "algorithm": algorithm,
             "response_time_ms": handshake_data.get("response_time_ms", 0),
+            "ipv4": sub_ipv4,
+            "ipv6": sub_ipv6,
             "has_vulnerabilities": False,
             "certificate_valid": handshake_data.get("certificate_valid", False),
             "ssl_rating": _derive_ssl_rating(days_to_expiry, supported_tls_versions, algorithm, key_size),
@@ -1177,6 +1208,7 @@ def get_subdomain_scan_data(
             scan_data["pqc_status"] = "None"
             scan_data["pqc_detection_notes"] = []
     else:
+        sub_ipv4, sub_ipv6 = _resolve_ips(subdomain)
         scan_data = {
             "subdomain": subdomain,
             "status": "inactive",
@@ -1190,6 +1222,8 @@ def get_subdomain_scan_data(
             "days_to_expiry": None,
             "algorithm": "Unavailable",
             "response_time_ms": None,
+            "ipv4": sub_ipv4,
+            "ipv6": sub_ipv6,
             "has_vulnerabilities": False,
             "certificate_valid": False,
             "ssl_rating": "N/A",
@@ -1228,9 +1262,11 @@ def discover_subdomains(domain: str, scan_mode: str = "Full Deep Scan") -> dict:
 
     crtsh_results = _discover_subdomains_from_crtsh(domain)
     dns_results = _discover_subdomains_from_dns(domain)
+    hackertarget_results = _discover_subdomains_from_hackertarget(domain)
 
     discovered.update(crtsh_results)
     discovered.update(dns_results)
+    discovered.update(hackertarget_results)
 
     # Also include SAN domains from the main domain just in case
     for san in main_domain_data.get("san_domains", []):
@@ -1344,6 +1380,7 @@ def discover_subdomains(domain: str, scan_mode: str = "Full Deep Scan") -> dict:
             "discovery_sources": {
                 "crtsh": len(crtsh_results),
                 "dns": len(dns_results),
+                "hackertarget": len(hackertarget_results),
                 "certificate_san": len(main_domain_data.get("san_domains", [])),
             },
             "expansion_sources": {

@@ -9,6 +9,7 @@ type ReportsOverview = {
 };
 
 type ReportHistoryRow = {
+  asset_id?: string;
   report_id: string;
   timestamp: string;
   domain: string;
@@ -68,7 +69,11 @@ const Reports = () => {
       setHistoryLoading(true);
       try {
         const query = historyFilter.trim() ? `?domain=${encodeURIComponent(historyFilter.trim())}` : '';
-        const response = await fetch(`${apiBase}/api/reports/history${query}`);
+        const response = await fetch(`${apiBase}/api/reports/history${query}`, {
+          headers: {
+            'x-user-role': role,
+          },
+        });
         if (!response.ok) {
           throw new Error('Failed to load report history');
         }
@@ -83,7 +88,7 @@ const Reports = () => {
     };
 
     loadHistory();
-  }, [apiBase, historyFilter]);
+  }, [apiBase, historyFilter, role]);
 
   const handleSendDomainReport = async () => {
     if (!reportDomain.trim() || !reportRecipient.trim()) {
@@ -95,7 +100,10 @@ const Reports = () => {
     try {
       const response = await fetch(`${apiBase}/api/reports/company/email`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-role': role,
+        },
         body: JSON.stringify({
           domain: reportDomain.trim(),
           recipient: reportRecipient.trim(),

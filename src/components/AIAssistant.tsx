@@ -92,7 +92,7 @@ const AIAssistant = () => {
 
     } catch (err: any) {
       console.error("Chat failed", err);
-      const errorMessage = err?.message || 'Unable to reach AI service. Ensure backend is running on port 8010.';
+      const errorMessage = err?.message || 'Unable to reach AI service. Ensure backend is running on port 8000.';
       setMessages(prev => [...prev, { role: 'error', text: `AI request failed: ${errorMessage}` }]);
       setToastMsg(`Action Failed: ${errorMessage}`);
       setShowToast(true);
