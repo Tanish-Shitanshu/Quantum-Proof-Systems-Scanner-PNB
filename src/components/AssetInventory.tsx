@@ -45,11 +45,10 @@ const AssetInventory = () => {
   }, [apiBase]);
 
   const filteredAssets = assets.filter(a => {
-    const normalizedType = String(a.type || '').toLowerCase() === 'software' ? 'API' : a.type;
+    const normalizedType = String(a.type || '').toLowerCase() === 'software' ? 'API' : (a.type || '');
     const expiringFlag = searchParams.get('expiring') === 'true';
 
     if (search && !a.name.toLowerCase().includes(search.toLowerCase()) && !(a.ip_address && a.ip_address.includes(search))) return false;
-    if (filterType !== "Asset Type" && a.type !== filterType) return false;
     if (filterType !== "Asset Type" && normalizedType !== filterType) return false;
     if (filterStatus !== "Status" && a.scan_result && a.risk) {
         if (filterStatus === "Safe" && a.risk.risk_level !== "Low") return false;
@@ -159,7 +158,7 @@ const AssetInventory = () => {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={() => window.open(apiBase + '/api/reports/download')} className="bg-surface-container-highest text-on-surface px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 hover:bg-surface-variant transition-colors border border-outline-variant/20 w-full sm:w-auto">
+            <button onClick={() => { const r = localStorage.getItem('userRole') || 'User'; if (r === 'User') { alert('Only Admin or Super Admin can export the full report.'); return; } window.open(apiBase + '/api/reports/download?x_user_role=' + encodeURIComponent(r)); }} className="bg-surface-container-highest text-on-surface px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 hover:bg-surface-variant transition-colors border border-outline-variant/20 w-full sm:w-auto">
               <span className="material-symbols-outlined text-sm" data-icon="file_download">file_download</span>
               Export
             </button>
