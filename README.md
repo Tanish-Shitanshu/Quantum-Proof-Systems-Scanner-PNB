@@ -102,22 +102,35 @@ We spared absolutely no expense building a modern, highly concurrent stack:
 
 ## 🏁 How to Run
 
-1. **Install Dependencies:**
-   ```bash
-   # Frontend
-   npm install
-   
-   # Backend
-   cd backend
-   pip install -r requirements.txt
-   ```
+> **Prerequisites:** [Node.js](https://nodejs.org) and [Python 3](https://python.org) must be installed. That's it.
 
-2. **Start the Systems:**
-   *First Terminal (Backend):*
+### One-Command Setup
+
+**Linux / macOS:**
+```bash
+git clone https://github.com/Mohitlikestocode/Quantum-Proof-Systems-Scanner_PNB.git
+cd Quantum-Proof-Systems-Scanner_PNB
+chmod +x setup.sh start.sh
+./setup.sh     # installs everything
+./start.sh     # launches both servers
+```
+
+**Windows:**
+```bash
+git clone https://github.com/Mohitlikestocode/Quantum-Proof-Systems-Scanner_PNB.git
+cd Quantum-Proof-Systems-Scanner_PNB
+setup.bat       # installs everything
+start.bat       # launches both servers
+```
+
+The frontend opens at `http://localhost:5173` and the backend API at `http://localhost:8000`.
+
+### Manual Start (alternative)
+   *Backend:*
    ```bash
-  python -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+   python -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
    ```
-   *Second Terminal (Frontend):*
+   *Frontend:*
    ```bash
    npm run dev
    ```
