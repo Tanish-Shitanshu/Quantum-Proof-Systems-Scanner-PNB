@@ -5,9 +5,7 @@ echo.
 
 :: Start backend
 echo [*] Starting backend on http://localhost:8000 ...
-cd backend
-start "Quantum Shield Backend" cmd /k ".venv\Scripts\activate.bat && uvicorn main:app --reload --port 8000"
-cd ..
+start "Quantum Shield Backend" cmd /k "backend\.venv\Scripts\activate.bat && uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000"
 
 :: Start frontend
 echo [*] Starting frontend on http://localhost:5173 ...

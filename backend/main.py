@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 from starlette.middleware.base import BaseHTTPMiddleware
 
 # Load environment variables (SMTP_EMAIL, SMTP_PASSWORD, GEMINI_API_KEY)
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 # Import models and DB
 from .models import Asset, ScanResult, RiskScore, ChatCommand

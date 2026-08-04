@@ -9,9 +9,9 @@ echo ""
 echo "[*] Starting backend on http://localhost:8000 ..."
 cd backend
 source .venv/bin/activate
-uvicorn main:app --reload --host 0.0.0.0 --port 8000 &
-BACKEND_PID=$!
 cd ..
+uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000 &
+BACKEND_PID=$!
 
 # Wait for backend to be ready
 echo "[*] Waiting for backend to be ready..."
