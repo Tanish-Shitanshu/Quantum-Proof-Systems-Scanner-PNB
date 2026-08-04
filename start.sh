@@ -9,9 +9,19 @@ echo ""
 echo "[*] Starting backend on http://localhost:8000 ..."
 cd backend
 source .venv/bin/activate
-uvicorn main:app --reload --port 8000 &
+uvicorn main:app --reload --host 0.0.0.0 --port 8000 &
 BACKEND_PID=$!
 cd ..
+
+# Wait for backend to be ready
+echo "[*] Waiting for backend to be ready..."
+for i in $(seq 1 15); do
+  if curl -s http://localhost:8000/docs > /dev/null 2>&1; then
+    echo "[OK] Backend is running."
+    break
+  fi
+  sleep 1
+done
 
 # Start frontend
 echo "[*] Starting frontend on http://localhost:5173 ..."

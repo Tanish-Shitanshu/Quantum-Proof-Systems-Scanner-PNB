@@ -38,6 +38,11 @@ else
     echo "[OK] Python3 found: $(python3 --version)"
 fi
 
+# Ensure python3-venv is available (Ubuntu sometimes ships without it)
+if command -v apt &> /dev/null; then
+    sudo apt install -y python3-venv curl 2>/dev/null || true
+fi
+
 # Install frontend dependencies
 echo ""
 echo "[*] Installing frontend dependencies..."
@@ -49,6 +54,7 @@ echo "[*] Setting up backend..."
 cd backend
 python3 -m venv .venv
 source .venv/bin/activate
+pip install --upgrade pip
 pip install -r requirements.txt
 deactivate
 cd ..
