@@ -47,13 +47,13 @@ class RiskScore(BaseModel):
     improvement: Optional[str] = None
 
 class ScanResult(BaseModel):
-    tls_version: str
-    cipher_suite: str
-    key_size: int
-    certificate_issuer: str
-    expiry_date: str
-    algorithm: str
-    days_to_expiry: int
+    tls_version: Optional[str] = None
+    cipher_suite: Optional[str] = None
+    key_size: Optional[int] = None
+    certificate_issuer: Optional[str] = None
+    expiry_date: Optional[str] = None
+    algorithm: Optional[str] = None
+    days_to_expiry: Optional[int] = None
     ipv4: Optional[str] = None
     ipv6: Optional[str] = None
     

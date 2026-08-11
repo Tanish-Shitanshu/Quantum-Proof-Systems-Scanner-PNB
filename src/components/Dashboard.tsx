@@ -66,7 +66,7 @@ const Dashboard = () => {
             Refresh
           </button>
           <button
-            onClick={() => window.open(apiBase + '/api/reports/download?x_user_role=Super%20Admin', '_blank')}
+            onClick={() => { const r = localStorage.getItem('userRole') || 'User'; if (r !== 'Super Admin') { alert('Only Super Admin can export the full CISO report.'); return; } window.open(apiBase + '/api/reports/download?x_user_role=' + encodeURIComponent(r), '_blank'); }}
             className="flex items-center justify-center gap-2 px-6 py-2.5 bg-gradient-to-br from-primary to-primary-container text-white rounded-lg text-sm font-bold shadow-md shadow-primary/20 hover:scale-105 active:scale-95 transition-all"
           >
             <span className="material-symbols-outlined text-[18px]" data-icon="download">download</span>
@@ -76,30 +76,30 @@ const Dashboard = () => {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-6 mb-8">
-        <div className="bg-surface-container-lowest p-5 rounded-xl border border-outline-variant/10 shadow-sm">
+        <button onClick={() => navigate('/asset-inventory')} className="text-left bg-surface-container-lowest p-5 rounded-xl border border-outline-variant/10 shadow-sm hover:bg-surface-container-low transition-colors">
           <p className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider mb-3">Total Assets</p>
           <span className="text-2xl font-bold text-on-surface tracking-tight">{summary.total_assets}</span>
-        </div>
-        <div className="bg-surface-container-lowest p-5 rounded-xl border border-outline-variant/10 shadow-sm">
+        </button>
+        <button onClick={() => navigate('/asset-inventory?type=API')} className="text-left bg-surface-container-lowest p-5 rounded-xl border border-outline-variant/10 shadow-sm hover:bg-surface-container-low transition-colors">
           <p className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider mb-3">APIs</p>
           <span className="text-2xl font-bold text-on-surface tracking-tight">{summary.apis}</span>
-        </div>
-        <div className="bg-surface-container-lowest p-5 rounded-xl border border-outline-variant/10 shadow-sm">
+        </button>
+        <button onClick={() => navigate('/asset-inventory?type=Hardware')} className="text-left bg-surface-container-lowest p-5 rounded-xl border border-outline-variant/10 shadow-sm hover:bg-surface-container-low transition-colors">
           <p className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider mb-3">Servers</p>
           <span className="text-2xl font-bold text-on-surface tracking-tight">{summary.servers}</span>
-        </div>
-        <div className="bg-surface-container-lowest p-5 rounded-xl border border-outline-variant/10 shadow-sm">
+        </button>
+        <button onClick={() => navigate('/asset-inventory?expiring=true')} className="text-left bg-surface-container-lowest p-5 rounded-xl border border-outline-variant/10 shadow-sm hover:bg-surface-container-low transition-colors">
           <p className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider mb-3">Expiring Certs</p>
           <span className="text-2xl font-bold text-secondary-container tracking-tight">{summary.expiring_certs}</span>
-        </div>
-        <div className="bg-surface-container-lowest p-5 rounded-xl border border-outline-variant/10 shadow-sm">
+        </button>
+        <button onClick={() => navigate('/asset-inventory?risk=Low')} className="text-left bg-surface-container-lowest p-5 rounded-xl border border-outline-variant/10 shadow-sm hover:bg-surface-container-low transition-colors">
           <p className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider mb-3">PQC Ready</p>
           <span className="text-2xl font-bold text-tertiary tracking-tight">{summary.pqc_readiness_pct}%</span>
-        </div>
-        <div className="bg-surface-container-lowest p-5 rounded-xl border border-outline-variant/10 shadow-sm ring-2 ring-error/5">
+        </button>
+        <button onClick={() => navigate('/asset-inventory?risk=High')} className="text-left bg-surface-container-lowest p-5 rounded-xl border border-outline-variant/10 shadow-sm ring-2 ring-error/5 hover:bg-surface-container-low transition-colors">
           <p className="text-[10px] font-bold text-error uppercase tracking-wider mb-3">High Risk Assets</p>
           <span className="text-2xl font-bold text-error tracking-tight">{summary.high_risk}</span>
-        </div>
+        </button>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-12 gap-6 mb-8">
@@ -157,7 +157,7 @@ const Dashboard = () => {
                     onClick={() => {
                       const assetName = String(asset?.name || '');
                       if (assetName.includes('.')) {
-                        window.open(apiBase + '/api/reports/website/download?domain=' + encodeURIComponent(assetName) + '&x_user_role=Super%20Admin', '_blank');
+                        navigate('/scanner?domain=' + encodeURIComponent(assetName));
                         return;
                       }
                       navigate('/asset-inventory');

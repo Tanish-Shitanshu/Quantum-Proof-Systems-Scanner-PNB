@@ -103,7 +103,7 @@ const Sidebar = ({ isOpen, setIsOpen }: SidebarProps) => {
           Start Scan
         </button>
         <button
-          onClick={() => navigate('/reports')}
+          onClick={() => navigate('/settings')}
           className="w-full flex items-center gap-3 px-3 py-2 text-slate-600 hover:text-slate-900 hover:bg-slate-200/50 transition-colors duration-200 rounded cursor-pointer"
         >
           <span className="material-symbols-outlined text-[20px]" data-icon="settings">settings</span>

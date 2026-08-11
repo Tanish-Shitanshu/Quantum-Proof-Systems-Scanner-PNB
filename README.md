@@ -102,26 +102,78 @@ We spared absolutely no expense building a modern, highly concurrent stack:
 
 ## 🏁 How to Run
 
-1. **Install Dependencies:**
-   ```bash
-   # Frontend
-   npm install
-   
-   # Backend
-   cd backend
-   pip install -r requirements.txt
-   ```
+> **Prerequisites:** [Node.js](https://nodejs.org) and [Python 3](https://python.org) must be installed. That's it.
 
-2. **Start the Systems:**
-   *First Terminal (Backend):*
+### One-Command Setup
+
+**Linux / macOS:**
+```bash
+git clone https://github.com/Mohitlikestocode/Quantum-Proof-Systems-Scanner_PNB.git
+cd Quantum-Proof-Systems-Scanner_PNB
+chmod +x setup.sh start.sh
+./setup.sh     # installs everything
+./start.sh     # launches both servers
+```
+
+**Windows:**
+```bash
+git clone https://github.com/Mohitlikestocode/Quantum-Proof-Systems-Scanner_PNB.git
+cd Quantum-Proof-Systems-Scanner_PNB
+setup.bat       # installs everything
+start.bat       # launches both servers
+```
+
+The frontend opens at `http://localhost:5173` and the backend API at `http://localhost:8000`.
+
+### Manual Start (alternative)
+   *Backend:*
    ```bash
-   cd backend
-   uvicorn main:app --reload --port 8000
+   python -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
    ```
-   *Second Terminal (Frontend):*
+   *Frontend:*
    ```bash
    npm run dev
    ```
+
+---
+
+## Chatbot Working Commands
+
+Use these examples directly in the AI Assistant screen:
+
+1. `Scan example.com`
+2. `Schedule scan for example.com every week at 3 PM email to admin@company.com`
+3. `Email report of example.com to admin@company.com`
+4. `Show vulnerable assets`
+5. `Generate report`
+6. `Explain TLS 1.0 vulnerability`
+
+## Chatbot Email Prerequisite
+
+Email-related commands require SMTP credentials in `backend/.env`:
+
+- `SMTP_EMAIL`
+- `SMTP_PASSWORD`
+
+Optional for AI summary:
+
+- `GEMINI_API_KEY`
+
+Without valid SMTP credentials, email dispatch endpoints cannot send report emails.
+
+---
+
+## Production Hosting Path
+
+For non-local deployment, queued scan workers, and persistence setup, use:
+
+- `Documentation/production_deployment.md`
+
+New async scan queue APIs:
+
+1. `POST /api/scan/async`
+2. `GET /api/scan/jobs/{job_id}`
+3. `GET /api/scan/jobs`
 
 ---
 

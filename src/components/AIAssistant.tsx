@@ -1,6 +1,8 @@
 import { useRef, useState } from 'react';
+import { hasPermission } from './Settings';
 
 const AIAssistant = () => {
+  const canUseAI = hasPermission('can_use_ai');
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [showToast, setShowToast] = useState(false);
@@ -16,6 +18,15 @@ const AIAssistant = () => {
       text: "Greetings, Administrator. I am your Precise Sentinel AI. I can help you orchestrate scans, analyze cryptographic vulnerabilities, or automate reporting across your quantum-vulnerable infrastructure.\n\nWhat would you like to execute today?"
     }
   ]);
+
+  const sampleCommands = [
+    'Scan example.com',
+    'Schedule scan for example.com every week at 3 PM email to admin@company.com',
+    'Email report of example.com to admin@company.com',
+    'Show vulnerable assets',
+    'Generate report',
+    'Explain TLS 1.0 vulnerability',
+  ];
 
   const handleSend = async (manualInput?: string) => {
     const userMsg = (manualInput || input).trim();
@@ -83,7 +94,7 @@ const AIAssistant = () => {
 
     } catch (err: any) {
       console.error("Chat failed", err);
-      const errorMessage = err?.message || 'Unable to reach AI service. Ensure backend is running on port 8010.';
+      const errorMessage = err?.message || 'Unable to reach AI service. Ensure backend is running on port 8000.';
       setMessages(prev => [...prev, { role: 'error', text: `AI request failed: ${errorMessage}` }]);
       setToastMsg(`Action Failed: ${errorMessage}`);
       setShowToast(true);
@@ -100,6 +111,18 @@ const AIAssistant = () => {
     }
   };
 
+  if (!canUseAI) {
+    return (
+      <main className="md:ml-64 pt-24 pb-12 px-8 flex items-center justify-center min-h-screen">
+        <div className="bg-surface-container-lowest rounded-2xl p-12 shadow-sm border border-outline-variant/10 text-center max-w-md">
+          <span className="material-symbols-outlined text-5xl text-on-surface-variant mb-4 block">lock</span>
+          <h2 className="text-lg font-bold text-on-surface mb-2">AI Assistant Access Restricted</h2>
+          <p className="text-sm text-on-surface-variant">Your role does not have permission to use the AI Assistant. Contact your Super Admin to request access.</p>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <div className="flex-1">
       <main className="md:ml-64 pt-24 pb-8 px-8 min-h-screen bg-background relative">
@@ -113,7 +136,7 @@ const AIAssistant = () => {
             <div className="flex gap-2">
               <div className="bg-surface-container-lowest px-4 py-2 rounded-lg shadow-sm flex items-center gap-2 border border-outline-variant/10">
                 <span className="text-xs font-bold text-on-surface-variant">ENGINE:</span>
-                <span className="text-xs font-bold text-primary">QUANTUM-GPT-4</span>
+                <span className="text-xs font-bold text-primary">BACKEND /api/chat</span>
               </div>
             </div>
           </div>
@@ -128,19 +151,42 @@ const AIAssistant = () => {
                   <button onClick={() => handleSend("Summarize transition plan for TLS 1.3 migration")}
                     className="w-full text-left p-3 bg-surface-container-lowest rounded-lg border-l-4 border-primary shadow-sm cursor-pointer">
                     <p className="text-xs font-bold truncate">TLS 1.3 Transition Plan</p>
-                    <p className="text-[10px] text-on-surface-variant mt-1">2 mins ago</p>
+                    <p className="text-[10px] text-on-surface-variant mt-1">Sample Prompt</p>
                   </button>
                   <button onClick={() => handleSend("Explain symmetric key rotation best practices")}
                     className="w-full text-left p-3 hover:bg-surface-container-highest/50 rounded-lg cursor-pointer transition-colors">
                     <p className="text-xs font-medium text-on-surface-variant truncate">Symmetric Key Rotation</p>
-                    <p className="text-[10px] text-on-surface-variant/60 mt-1">1 hour ago</p>
+                    <p className="text-[10px] text-on-surface-variant/60 mt-1">Sample Prompt</p>
                   </button>
                   <button onClick={() => handleSend("Run a NIST compliance audit summary for latest scans")}
                     className="w-full text-left p-3 hover:bg-surface-container-highest/50 rounded-lg cursor-pointer transition-colors">
                     <p className="text-xs font-medium text-on-surface-variant truncate">NIST Compliance Audit</p>
-                    <p className="text-[10px] text-on-surface-variant/60 mt-1">Yesterday</p>
+                    <p className="text-[10px] text-on-surface-variant/60 mt-1">Sample Prompt</p>
                   </button>
                 </div>
+              </div>
+
+              <div className="bg-surface-container-lowest rounded-xl p-4 border border-outline-variant/10">
+                <p className="text-[10px] font-bold text-on-surface-variant tracking-widest uppercase mb-3">Working Commands</p>
+                <div className="space-y-2">
+                  {sampleCommands.map((cmd) => (
+                    <button
+                      key={cmd}
+                      onClick={() => handleSend(cmd)}
+                      className="w-full text-left px-3 py-2 text-[11px] rounded-lg bg-surface-container-highest hover:bg-surface-container-high transition-colors"
+                    >
+                      {cmd}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="bg-surface-container-lowest rounded-xl p-4 border border-outline-variant/10">
+                <p className="text-[10px] font-bold text-on-surface-variant tracking-widest uppercase mb-2">Email Prerequisite</p>
+                <p className="text-[11px] text-on-surface-variant leading-relaxed">
+                  For email commands to work, set SMTP_EMAIL and SMTP_PASSWORD in backend/.env.
+                  Without these credentials, email dispatch endpoints will fail.
+                </p>
               </div>
               
               {/* Suggested Actions Bento Block */}
@@ -328,13 +374,13 @@ const AIAssistant = () => {
             </div>
             <p className="text-xs font-bold text-on-surface mb-2">PQC Discovery Engine</p>
             <p className="text-[11px] leading-relaxed text-on-surface-variant">
-              The assistant is currently cross-referencing your <span className="font-bold text-on-surface">Kyber-768</span> implementation against the latest NIST draft standards.
+              The assistant response is generated from backend parser actions and current runtime scan/report data.
             </p>
             <div className="mt-4 pt-3 border-t border-outline-variant/20">
               <div className="w-full bg-surface-container-highest h-1 rounded-full overflow-hidden">
-                <div className="bg-primary h-full w-3/4 rounded-full"></div>
+                <div className="bg-primary h-full w-full rounded-full"></div>
               </div>
-              <p className="text-[9px] text-on-surface-variant mt-2 font-medium">75% Context Synchronization Complete</p>
+              <p className="text-[9px] text-on-surface-variant mt-2 font-medium">Live API command mode</p>
             </div>
           </div>
         </div>

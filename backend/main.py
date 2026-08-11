@@ -5,20 +5,23 @@ from typing import List, Optional, Dict, Literal
 import asyncio
 import datetime
 import ipaddress
+import os
 import re
 import time
 import uuid
+import traceback
 from collections import defaultdict, deque
 from threading import Lock
+from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 from starlette.middleware.base import BaseHTTPMiddleware
 
 # Load environment variables (SMTP_EMAIL, SMTP_PASSWORD, GEMINI_API_KEY)
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 # Import models and DB
 from .models import Asset, ScanResult, RiskScore, ChatCommand
-from .database import db_assets, db_jobs, db_nodes, db_edges, seed_database
+from .database import db_assets, db_jobs, db_nodes, db_edges, seed_database, save_runtime_state
 
 # Import Engines
 from .engines.scanner import scan_target
@@ -37,6 +40,10 @@ from .engines.os_shield_engine import (
 
 def get_all_assets_list():
     return list(db_assets.values())
+
+
+def _asset_type_label(asset_type: str) -> str:
+    return "API" if str(asset_type or "").strip().lower() == "software" else (asset_type or "Unknown")
 
 
 def _normalize_domain(domain: str) -> str:
@@ -151,10 +158,40 @@ def _validate_email(email: str) -> str:
 
 app = FastAPI(title="Quantum-Proof Systems Scanner API")
 
+SCAN_WORKER_COUNT = max(1, int(os.getenv("SCAN_WORKER_COUNT", "4")))
+scan_executor = ThreadPoolExecutor(max_workers=SCAN_WORKER_COUNT)
+scan_jobs_lock = Lock()
+
+
+def _serialize_exception(exc: Exception) -> str:
+    return f"{exc.__class__.__name__}: {exc}"
+
+
+def _set_scan_job(job_id: str, payload: dict) -> None:
+    with scan_jobs_lock:
+        for idx, row in enumerate(db_jobs):
+            if row.get("job_id") == job_id:
+                db_jobs[idx] = payload
+                save_runtime_state()
+                return
+        db_jobs.append(payload)
+    save_runtime_state()
+
+
+def _get_scan_job(job_id: str) -> Optional[dict]:
+    with scan_jobs_lock:
+        for row in db_jobs:
+            if row.get("job_id") == job_id:
+                return row
+    return None
+
 # Setup CORS for Frontend
+# In production, set CORS_ALLOWED_ORIGINS env var to a comma-separated list.
+_raw_origins = os.getenv("CORS_ALLOWED_ORIGINS", "*")
+_allowed_origins: list = ["*"] if _raw_origins.strip() == "*" else [o.strip() for o in _raw_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # For hackathon demo
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -190,9 +227,25 @@ def get_assets(status: Optional[str] = None, type: Optional[str] = None):
     if status and status.lower() != "all":
         assets = [a for a in assets if a["status"] == status.lower()]
     if type and type.lower() != "asset type":
-        assets = [a for a in assets if a["type"] == type]
+        type_lower = type.lower()
+        assets = [a for a in assets if _asset_type_label(a.get("type", "")).lower() == type_lower]
         
-    return assets
+    normalized = []
+    for asset in assets:
+        asset_copy = dict(asset)
+        asset_copy["type"] = _asset_type_label(asset_copy.get("type"))
+        normalized.append(asset_copy)
+    return normalized
+
+
+@app.get("/api/assets/{asset_id}")
+def get_asset_by_id(asset_id: str):
+    asset = db_assets.get(asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    payload = dict(asset)
+    payload["type"] = _asset_type_label(payload.get("type"))
+    return payload
 
 @app.get("/api/vulnerable-assets", response_model=List[Asset])
 def get_vulnerable_assets():
@@ -224,10 +277,14 @@ def run_scan(request: ScanRequest, background_tasks: BackgroundTasks, x_user_rol
     if client_request:
         _rate_limit(client_request, "scan")
 
-    domain = _validate_domain(request.domain)
-    
+    return _execute_scan(request.domain, request.mode or "Full Deep Scan", x_user_role)
+
+
+def _execute_scan(domain_input: str, mode: str, x_user_role: Optional[str]) -> dict:
+    domain = _validate_domain(domain_input)
+
     # 1. Run full discovery scan
-    scan_data = scan_target(domain, mode=request.mode or "Full Deep Scan")
+    scan_data = scan_target(domain, mode=mode or "Full Deep Scan")
     
     # Normalize scan fields to avoid runtime failures when handshake fails/inactive targets
     normalized_tls_versions = scan_data.get("tls_versions_list") or []
@@ -246,6 +303,15 @@ def run_scan(request: ScanRequest, background_tasks: BackgroundTasks, x_user_rol
     if not isinstance(normalized_days_to_expiry, int):
         normalized_days_to_expiry = 0
 
+    # Build a small exposure context for dynamic exposure scoring.
+    subdomain_rows = scan_data.get("all_subdomains_detailed", []) or []
+    active_subdomain_count = sum(1 for row in subdomain_rows if str(row.get("status", "")).lower() == "active")
+    high_severity_vuln_count = sum(
+        1
+        for v in (scan_data.get("vulnerabilities", []) or [])
+        if str(v.get("severity", "")).lower() in {"high", "critical"}
+    )
+
     # 2. Compute advanced risk grading
     risk_data = calculate_advanced_risk(
         normalized_tls_versions,
@@ -256,6 +322,11 @@ def run_scan(request: ScanRequest, background_tasks: BackgroundTasks, x_user_rol
         scan_data.get("hosting", {"type": "internal"}),
         pqc_kem_detected=scan_data.get("pqc_kem_detected", False),
         pqc_status=scan_data.get("pqc_status", "None"),
+        exposure_context={
+            "public_target": True,
+            "active_subdomains": active_subdomain_count,
+            "high_severity_vuln_count": high_severity_vuln_count,
+        },
     )
     
     # 3. Create or Update Asset Record
@@ -304,15 +375,78 @@ def run_scan(request: ScanRequest, background_tasks: BackgroundTasks, x_user_rol
         "mobile_apps": scan_data.get("mobile_info", {}).get("apps", []),
         "subdomains": scan_data.get("subdomains_info", {}).get("subdomains", []),
         "is_active": True,
-        "metadata": {"source": "advanced_scan", "mode": request.mode, "scanned_by_role": x_user_role}
+        "metadata": {"source": "advanced_scan", "mode": mode, "scanned_by_role": x_user_role}
     }
     
     db_assets[asset_id] = new_asset
     
     # Also add mock node for network graph
     db_nodes.append({"id": domain, "type": "Domain", "risk": risk_data["risk_level"]})
+    save_runtime_state()
     
     return new_asset
+
+
+@app.post("/api/scan/async")
+def run_scan_async(request: ScanRequest, x_user_role: Optional[str] = Header(None), client_request: Request = None):
+    """Queue scan execution and return job id for polling."""
+    if client_request:
+        _rate_limit(client_request, "scan")
+
+    domain = _validate_domain(request.domain)
+    mode = request.mode or "Full Deep Scan"
+    job_id = str(uuid.uuid4())
+
+    queued_payload = {
+        "job_id": job_id,
+        "domain": domain,
+        "mode": mode,
+        "status": "queued",
+        "created_at": datetime.datetime.now().isoformat(),
+        "updated_at": datetime.datetime.now().isoformat(),
+        "result_asset_id": None,
+        "error": None,
+    }
+    _set_scan_job(job_id, queued_payload)
+
+    def _worker() -> None:
+        running = dict(queued_payload)
+        running["status"] = "running"
+        running["updated_at"] = datetime.datetime.now().isoformat()
+        _set_scan_job(job_id, running)
+
+        try:
+            result = _execute_scan(domain, mode, x_user_role)
+            done = dict(running)
+            done["status"] = "completed"
+            done["result_asset_id"] = result.get("id")
+            done["updated_at"] = datetime.datetime.now().isoformat()
+            _set_scan_job(job_id, done)
+        except Exception as exc:
+            failed = dict(running)
+            failed["status"] = "failed"
+            failed["error"] = _serialize_exception(exc)
+            failed["trace"] = traceback.format_exc(limit=3)
+            failed["updated_at"] = datetime.datetime.now().isoformat()
+            _set_scan_job(job_id, failed)
+
+    scan_executor.submit(_worker)
+    return {"job_id": job_id, "status": "queued", "domain": domain, "mode": mode}
+
+
+@app.get("/api/scan/jobs")
+def list_scan_jobs(limit: int = 50):
+    limit = max(1, min(limit, 200))
+    rows = sorted(db_jobs, key=lambda item: _parse_iso_datetime(item.get("created_at", "")), reverse=True)
+    return {"total": len(rows), "jobs": rows[:limit]}
+
+
+@app.get("/api/scan/jobs/{job_id}")
+def get_scan_job(job_id: str):
+    job = _get_scan_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Scan job not found")
+    return job
 
 
 @app.post("/api/schedule")
@@ -367,13 +501,13 @@ def get_dashboard_metrics():
     assets = list(db_assets.values())
     total_assets = len(assets)
     
-    servers = sum(1 for a in assets if "Hardware" in a["type"] or "SERVER" in str(a.get("metadata", "")).upper())
-    apis = sum(1 for a in assets if "Software" in a["type"] or "API" in str(a.get("metadata", "")).upper())
+    servers = sum(1 for a in assets if "HARDWARE" in str(_asset_type_label(a.get("type", ""))).upper() or "SERVER" in str(a.get("metadata", "")).upper())
+    apis = sum(1 for a in assets if "API" in str(_asset_type_label(a.get("type", ""))).upper() or "API" in str(a.get("metadata", "")).upper())
     
     high_risk_assets = [a for a in assets if a.get("risk", {}).get("risk_level") == "High"]
     
     # Expiring within 30 days or already expired
-    expiring_certs = [a for a in assets if a.get("scan_result", {}).get("days_to_expiry", 999) < 30]
+    expiring_certs = [a for a in assets if isinstance(a.get("scan_result", {}).get("days_to_expiry"), int) and a["scan_result"]["days_to_expiry"] < 30]
 
     pqc_ready_count = sum(1 for a in assets if str(a.get("risk", {}).get("label", "")).upper() == "PQC READY")
     pqc_readiness_pct = int((pqc_ready_count / total_assets) * 100) if total_assets > 0 else 0
@@ -541,6 +675,11 @@ class CreateUserRequest(BaseModel):
     name: str
     password: Optional[str] = None
 
+
+class UpdateUserRoleRequest(BaseModel):
+    username: str
+    new_role: Literal["Super Admin", "Admin", "User"]
+
 from .database import db_users
 
 @app.post("/api/users/create")
@@ -562,7 +701,24 @@ def create_user(request: CreateUserRequest, x_user_role: Optional[str] = Header(
         "name": request.name,
         "password": request.password or "User@123"
     }
+    save_runtime_state()
     return {"message": f"User {request.name} created successfully with role {request.target_role}"}
+
+
+@app.patch("/api/users/role")
+def update_user_role(request: UpdateUserRoleRequest, x_user_role: Optional[str] = Header(None)):
+    """Allows Super Admin to modify a user's role."""
+    if x_user_role != "Super Admin":
+        raise HTTPException(status_code=403, detail="Only Super Admin can modify user roles.")
+
+    for key, user in db_users.items():
+        if str(user.get("username", "")).lower() == request.username.strip().lower():
+            user["role"] = request.new_role
+            db_users[key] = user
+            save_runtime_state()
+            return {"message": f"Role updated for {request.username}", "new_role": request.new_role}
+
+    raise HTTPException(status_code=404, detail="User not found")
 
 @app.get("/api/users")
 def list_users(x_user_role: Optional[str] = Header(None)):
@@ -573,6 +729,41 @@ def list_users(x_user_role: Optional[str] = Header(None)):
         {"username": user.get("username"), "role": user.get("role"), "name": user.get("name")}
         for user in db_users.values()
     ]
+
+
+@app.get("/api/access/matrix")
+def access_matrix(x_user_role: Optional[str] = Header(None)):
+    if x_user_role not in {"Admin", "Super Admin"}:
+        raise HTTPException(status_code=403, detail="Access matrix requires Admin+")
+    return {
+        "Super Admin": {
+            "scan": True,
+            "history": True,
+            "json_reports": True,
+            "pdf_exports": True,
+            "full_ciso_export": True,
+            "email_reports": True,
+            "user_management": True,
+        },
+        "Admin": {
+            "scan": True,
+            "history": True,
+            "json_reports": True,
+            "pdf_exports": True,
+            "full_ciso_export": False,
+            "email_reports": True,
+            "user_management": False,
+        },
+        "User": {
+            "scan": True,
+            "history": False,
+            "json_reports": True,
+            "pdf_exports": False,
+            "full_ciso_export": False,
+            "email_reports": False,
+            "user_management": False,
+        },
+    }
 
 @app.get("/api/reports/asset-discovery")
 def report_asset_discovery():
@@ -594,7 +785,7 @@ def report_asset_discovery():
 
         rows.append({
             "domain": a["name"],
-            "asset_type": a.get("type"),
+            "asset_type": _asset_type_label(a.get("type")),
             "vendor": a.get("vendor"),
             "status": "active" if is_active else "inactive",
             "subdomains_count": len(subdomains),
@@ -1140,7 +1331,7 @@ def download_mythos_zip(server_name: str, target_os: str):
 
 
 @app.get("/api/reports/history")
-def report_history(domain: Optional[str] = None, limit: int = 50):
+def report_history(domain: Optional[str] = None, limit: int = 50, x_user_role: Optional[str] = Header(None)):
     """Return report-like historical rows from prior scans, optionally filtered by domain."""
     limit = max(1, min(limit, 200))
     assets = _get_assets_for_domain(domain) if domain else sorted(
@@ -1155,6 +1346,7 @@ def report_history(domain: Optional[str] = None, limit: int = 50):
         detection_date = asset.get("detection_date") or ""
         scan = asset.get("scan_result", {}) or {}
         rows.append({
+            "asset_id": asset.get("id"),
             "report_id": f"RP-{str(asset.get('id', 'NA'))[:8].upper()}",
             "timestamp": detection_date,
             "domain": asset.get("name"),
@@ -1234,8 +1426,11 @@ def send_company_report_email(recipient: str, domain: str, include_history: bool
 
 
 @app.post("/api/reports/company/email")
-def email_company_report(request: CompanyEmailReportRequest, client_request: Request):
+def email_company_report(request: CompanyEmailReportRequest, client_request: Request, x_user_role: Optional[str] = Header(None)):
     """Send a domain-specific report bundle to email, including historical scans for that domain."""
+    role = (x_user_role or "User").strip()
+    if role == "User":
+        raise HTTPException(status_code=403, detail="Only Admin or Super Admin can send report emails.")
     _rate_limit(client_request, "email")
     return send_company_report_email(request.recipient, request.domain, request.include_history)
 

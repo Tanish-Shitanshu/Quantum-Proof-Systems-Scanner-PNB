@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import ForceGraph2D from 'react-force-graph-2d';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 
 const AssetInventory = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:8000';
   const [assets, setAssets] = useState<any[]>([]);
   const [graphData, setGraphData] = useState<{nodes: any[], links: any[]}>({ nodes: [], links: [] });
@@ -12,6 +13,17 @@ const AssetInventory = () => {
   const [filterRisk, setFilterRisk] = useState("Risk Level");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
+  const [selectedAsset, setSelectedAsset] = useState<any | null>(null);
+
+  useEffect(() => {
+    const typeFilter = searchParams.get('type');
+    const riskFilter = searchParams.get('risk');
+    const queryFilter = searchParams.get('q');
+
+    if (typeFilter) setFilterType(typeFilter);
+    if (riskFilter) setFilterRisk(riskFilter);
+    if (queryFilter) setSearch(queryFilter);
+  }, [searchParams]);
 
   useEffect(() => {
     fetch(apiBase + '/api/assets')
@@ -33,14 +45,21 @@ const AssetInventory = () => {
   }, [apiBase]);
 
   const filteredAssets = assets.filter(a => {
+    const normalizedType = String(a.type || '').toLowerCase() === 'software' ? 'API' : (a.type || '');
+    const expiringFlag = searchParams.get('expiring') === 'true';
+
     if (search && !a.name.toLowerCase().includes(search.toLowerCase()) && !(a.ip_address && a.ip_address.includes(search))) return false;
-    if (filterType !== "Asset Type" && a.type !== filterType) return false;
+    if (filterType !== "Asset Type" && normalizedType !== filterType) return false;
     if (filterStatus !== "Status" && a.scan_result && a.risk) {
         if (filterStatus === "Safe" && a.risk.risk_level !== "Low") return false;
         if (filterStatus === "Warning" && a.risk.risk_level !== "Medium") return false;
         if (filterStatus === "Critical" && a.risk.risk_level !== "High") return false;
     }
     if (filterRisk !== "Risk Level" && a.risk && a.risk.risk_level !== filterRisk) return false;
+    if (expiringFlag) {
+      const days = Number(a?.scan_result?.days_to_expiry ?? 9999);
+      if (!(days < 30)) return false;
+    }
     return true;
   });
 
@@ -58,7 +77,7 @@ const AssetInventory = () => {
       {/* Header Section */}
       <div className="mb-10">
         <h1 className="text-[1.75rem] font-bold text-on-surface leading-tight tracking-tight headline-md">Asset Inventory</h1>
-        <p className="text-on-surface-variant body-md mt-1">Comprehensive visibility into all network infrastructure and software components.</p>
+        <p className="text-on-surface-variant body-md mt-1">Comprehensive visibility into all network infrastructure and API/domain assets.</p>
       </div>
 
       {/* Bento Summary Cards */}
@@ -69,10 +88,7 @@ const AssetInventory = () => {
             <span className="material-symbols-outlined text-primary opacity-60" data-icon="inventory">inventory</span>
           </div>
           <div className="text-3xl font-bold text-on-surface display-lg">{assets.length > 0 ? assets.length : '0'}</div>
-          <div className="mt-4 flex items-center text-tertiary text-xs font-semibold">
-            <span className="material-symbols-outlined text-xs mr-1" data-icon="trending_up">trending_up</span>
-            +12% from last month
-          </div>
+          <div className="mt-4 text-on-surface-variant text-xs font-medium">Live count from current runtime scan state</div>
         </div>
 
         <div className="bg-surface-container-lowest p-6 rounded-xl border-l-4 border-secondary shadow-sm hover:shadow-md transition-shadow">
@@ -82,7 +98,7 @@ const AssetInventory = () => {
           </div>
           <div className="text-3xl font-bold text-on-surface display-lg">{assets.filter(a => a.status === 'confirmed').length}</div>
           <div className="mt-4 text-on-surface-variant text-xs font-medium">
-            86.2% of total fleet
+            {assets.length > 0 ? `${Math.round((assets.filter(a => a.status === 'confirmed').length / assets.length) * 100)}% of total fleet` : 'No managed assets yet'}
           </div>
         </div>
 
@@ -106,7 +122,7 @@ const AssetInventory = () => {
           <div className="text-3xl font-bold text-on-surface display-lg">{assets.filter(a => a.risk?.risk_level === 'High').length}</div>
           <div className="mt-4 flex items-center text-error text-xs font-semibold">
             <span className="material-symbols-outlined text-xs mr-1" data-icon="priority_high">priority_high</span>
-            Across 3 critical nodes
+            Requires prioritized remediation
           </div>
         </div>
       </div>
@@ -124,7 +140,7 @@ const AssetInventory = () => {
               <select value={filterType} onChange={(e) => setFilterType(e.target.value)} className="bg-white border outline-none border-outline-variant/30 rounded-lg py-2 pl-3 pr-8 text-sm focus:ring-2 focus:ring-primary/20 text-on-surface-variant font-medium">
                 <option>Asset Type</option>
                 <option>Hardware</option>
-                <option>Software</option>
+                <option>API</option>
                 <option>Domain</option>
               </select>
               <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="bg-white border outline-none border-outline-variant/30 rounded-lg py-2 pl-3 pr-8 text-sm focus:ring-2 focus:ring-primary/20 text-on-surface-variant font-medium">
@@ -142,7 +158,7 @@ const AssetInventory = () => {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={() => window.open(apiBase + '/api/reports/download')} className="bg-surface-container-highest text-on-surface px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 hover:bg-surface-variant transition-colors border border-outline-variant/20 w-full sm:w-auto">
+            <button onClick={() => { const r = localStorage.getItem('userRole') || 'User'; if (r === 'User') { alert('Only Admin or Super Admin can export the full report.'); return; } window.open(apiBase + '/api/reports/download?x_user_role=' + encodeURIComponent(r)); }} className="bg-surface-container-highest text-on-surface px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 hover:bg-surface-variant transition-colors border border-outline-variant/20 w-full sm:w-auto">
               <span className="material-symbols-outlined text-sm" data-icon="file_download">file_download</span>
               Export
             </button>
@@ -176,12 +192,7 @@ const AssetInventory = () => {
                   <tr
                     key={asset.id}
                     onClick={() => {
-                      const assetName = String(asset?.name || '');
-                      if (assetName.includes('.')) {
-                        window.open(apiBase + '/api/reports/website/download?domain=' + encodeURIComponent(assetName) + '&x_user_role=Super%20Admin', '_blank');
-                        return;
-                      }
-                      navigate('/scanner');
+                      setSelectedAsset(asset);
                     }}
                     className="hover:bg-surface-container-low transition-colors group cursor-pointer"
                   >
@@ -192,7 +203,7 @@ const AssetInventory = () => {
                         </div>
                         <div>
                           <div className="font-semibold text-on-surface text-sm">{asset.name}</div>
-                          <div className="text-xs text-on-surface-variant">{asset.type}</div>
+                          <div className="text-xs text-on-surface-variant">{String(asset.type || '').toLowerCase() === 'software' ? 'API' : asset.type}</div>
                         </div>
                       </div>
                     </td>
@@ -202,7 +213,7 @@ const AssetInventory = () => {
                         {asset.risk?.status || 'Unknown'}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-sm text-on-surface-variant">{asset.type}</td>
+                    <td className="px-6 py-4 text-sm text-on-surface-variant">{String(asset.type || '').toLowerCase() === 'software' ? 'API' : asset.type}</td>
                     <td className="px-6 py-4 text-sm text-on-surface-variant">{asset.region}</td>
                     <td className="px-6 py-4 text-sm font-mono text-on-surface-variant">{asset.ip_address || '-'}</td>
                     <td className="px-6 py-4">
@@ -288,16 +299,70 @@ const AssetInventory = () => {
         <div className="bg-gradient-to-br from-primary to-primary-container p-6 rounded-xl shadow-lg relative overflow-hidden group">
           <div className="absolute -right-4 -top-4 w-24 h-24 bg-white/10 rounded-full blur-2xl group-hover:scale-150 transition-transform duration-700"></div>
           <h3 className="text-white font-bold text-base mb-2 relative z-10">Automated Discovery</h3>
-          <p className="text-blue-100 text-xs leading-relaxed mb-6 relative z-10">Discovery agents identified 14 new endpoints in the last 24 hours. Would you like to categorize them now?</p>
+          <p className="text-blue-100 text-xs leading-relaxed mb-6 relative z-10">Discovery inventory and risk categories update after every completed scan.</p>
           <button onClick={() => navigate('/asset-discovery')} className="w-full py-2.5 bg-white text-primary text-xs font-bold rounded-lg hover:bg-blue-50 transition-colors shadow-sm relative z-10">Review New Assets</button>
           <div className="mt-4 pt-4 border-t border-white/10 relative z-10">
             <div className="flex items-center gap-2 text-[10px] font-bold text-blue-200 uppercase tracking-widest">
               <span className="material-symbols-outlined text-xs" data-icon="sync">sync</span>
-              Next scan in 14m 22s
+              Live runtime state
             </div>
           </div>
         </div>
       </div>
+
+      {selectedAsset && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex justify-end" onClick={() => setSelectedAsset(null)}>
+          <aside className="w-full max-w-xl h-full bg-surface-container-lowest shadow-2xl p-6 overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-4 mb-6">
+              <div>
+                <h3 className="text-lg font-bold text-on-surface">Scan Details</h3>
+                <p className="text-xs text-on-surface-variant mt-1">{selectedAsset.name}</p>
+              </div>
+              <button onClick={() => setSelectedAsset(null)} className="px-3 py-1.5 rounded border border-outline-variant/30 text-xs font-semibold">Close</button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 text-xs mb-6">
+              <div className="p-3 rounded bg-surface-container-low">Risk Score: <span className="font-bold">{selectedAsset?.risk?.score ?? 0}</span></div>
+              <div className="p-3 rounded bg-surface-container-low">Risk Level: <span className="font-bold">{selectedAsset?.risk?.risk_level ?? 'Unknown'}</span></div>
+              <div className="p-3 rounded bg-surface-container-low">TLS Version: <span className="font-bold">{selectedAsset?.scan_result?.tls_version ?? 'Unknown'}</span></div>
+              <div className="p-3 rounded bg-surface-container-low">Cipher Suite: <span className="font-bold">{selectedAsset?.scan_result?.cipher_suite ?? 'Unknown'}</span></div>
+              <div className="p-3 rounded bg-surface-container-low">Algorithm: <span className="font-bold">{selectedAsset?.scan_result?.algorithm ?? 'Unknown'}</span></div>
+              <div className="p-3 rounded bg-surface-container-low">Key Size: <span className="font-bold">{selectedAsset?.scan_result?.key_size ?? 'N/A'}</span></div>
+              <div className="p-3 rounded bg-surface-container-low">Issuer: <span className="font-bold">{selectedAsset?.scan_result?.certificate_issuer ?? 'Unknown'}</span></div>
+              <div className="p-3 rounded bg-surface-container-low">Expiry: <span className="font-bold">{selectedAsset?.scan_result?.expiry_date ?? 'Unknown'}</span></div>
+              <div className="p-3 rounded bg-surface-container-low">Days To Expiry: <span className="font-bold">{selectedAsset?.scan_result?.days_to_expiry ?? 'N/A'}</span></div>
+              <div className="p-3 rounded bg-surface-container-low">IP: <span className="font-bold">{selectedAsset?.ip_address || selectedAsset?.scan_result?.ipv4 || 'N/A'}</span></div>
+              <div className="p-3 rounded bg-surface-container-low">Subdomains: <span className="font-bold">{selectedAsset?.scan_result?.all_subdomains_detailed?.length ?? selectedAsset?.subdomains?.length ?? 0}</span></div>
+              <div className="p-3 rounded bg-surface-container-low">Scan Time: <span className="font-bold">{selectedAsset?.detection_date ? new Date(selectedAsset.detection_date).toLocaleString() : 'Unknown'}</span></div>
+            </div>
+
+            <div className="mb-6">
+              <p className="text-xs font-bold uppercase tracking-wider text-on-surface-variant mb-2">Top Vulnerabilities</p>
+              {(selectedAsset?.vulnerabilities || []).length === 0 ? (
+                <p className="text-xs text-on-surface-variant">No vulnerability findings recorded for this scan.</p>
+              ) : (
+                <div className="space-y-2">
+                  {(selectedAsset?.vulnerabilities || []).slice(0, 8).map((v: any, idx: number) => (
+                    <div key={idx} className="p-3 rounded bg-surface-container-low text-xs">
+                      <span className="font-semibold">{v.type || 'Unknown'}</span>
+                      <span className="ml-2 text-on-surface-variant">{v.severity || 'Info'}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {String(selectedAsset?.name || '').includes('.') && (
+              <button
+                onClick={() => navigate('/scanner?domain=' + encodeURIComponent(selectedAsset.name) + '&assetId=' + encodeURIComponent(selectedAsset.id))}
+                className="w-full py-2.5 bg-primary text-white rounded-lg text-sm font-bold hover:opacity-90"
+              >
+                Open Full Scan View
+              </button>
+            )}
+          </aside>
+        </div>
+      )}
     </main>
   );
 };

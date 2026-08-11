@@ -1,77 +1,99 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+
+type Asset = {
+  id: string;
+  name: string;
+  ip_address?: string;
+  risk?: { risk_level?: string; score?: number };
+  scan_result?: { algorithm?: string; tls_version?: string };
+};
 
 const CyberRating = () => {
   const navigate = useNavigate();
-  const [vulnerableAssets, setVulnerableAssets] = useState<any[]>([]);
+  const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+  const [assets, setAssets] = useState<Asset[]>([]);
+  const [vulnerableAssets, setVulnerableAssets] = useState<Asset[]>([]);
 
   useEffect(() => {
-    fetch((import.meta.env.VITE_API_URL || 'http://localhost:8000') + '/api/vulnerable-assets')
-      .then(res => res.json())
-      .then(data => setVulnerableAssets(data))
-      .catch(err => console.error("Failed to fetch vulnerable assets:", err));
-  }, []);
+    fetch(apiBase + '/api/assets')
+      .then((res) => res.json())
+      .then((data) => setAssets(Array.isArray(data) ? data : []))
+      .catch(() => setAssets([]));
+
+    fetch(apiBase + '/api/vulnerable-assets')
+      .then((res) => res.json())
+      .then((data) => setVulnerableAssets(Array.isArray(data) ? data : []))
+      .catch(() => setVulnerableAssets([]));
+  }, [apiBase]);
+
+  const metrics = useMemo(() => {
+    const total = assets.length;
+    const low = assets.filter((a) => String(a?.risk?.risk_level || '').toLowerCase() === 'low').length;
+    const medium = assets.filter((a) => String(a?.risk?.risk_level || '').toLowerCase() === 'medium').length;
+    const high = assets.filter((a) => {
+      const lvl = String(a?.risk?.risk_level || '').toLowerCase();
+      return lvl === 'high' || lvl === 'critical';
+    }).length;
+
+    const avgScore = total > 0
+      ? assets.reduce((sum, a) => sum + Number(a?.risk?.score || 0), 0) / total
+      : 0;
+
+    return {
+      total,
+      low,
+      medium,
+      high,
+      rating1000: Math.round((avgScore / 100) * 1000),
+      safePct: total > 0 ? Math.round((low / total) * 100) : 0,
+    };
+  }, [assets]);
+
+  const topRisk = useMemo(() => {
+    return [...assets]
+      .sort((a, b) => Number(a?.risk?.score || 0) - Number(b?.risk?.score || 0))
+      .slice(0, 12);
+  }, [assets]);
 
   return (
     <main className="md:ml-64 pt-24 pb-12 px-10 min-h-screen">
-      {/* Executive Overview Header */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 md:gap-0 mb-10">
         <div>
           <h2 className="text-[1.75rem] font-bold text-on-surface tracking-tight leading-none mb-2">Cyber Rating</h2>
-          <p className="text-on-surface-variant text-sm max-w-xl">Comprehensive cryptographic health assessment based on post-quantum resilience benchmarks and NIST entropy standards.</p>
+          <p className="text-on-surface-variant text-sm max-w-xl">Live cryptographic health rating based only on current runtime asset risk data.</p>
         </div>
-        <div className="flex flex-col sm:flex-row gap-4">
-          <div className="px-4 py-2 bg-tertiary/10 border border-tertiary/20 rounded-lg flex items-center gap-2">
-            <span className="material-symbols-outlined text-tertiary text-lg" style={{ fontVariationSettings: "'FILL' 1" }}>verified</span>
-            <span className="text-tertiary font-bold text-sm uppercase tracking-wider">Elite-PQC</span>
-          </div>
-          <button 
-            onClick={() => window.open((import.meta.env.VITE_API_URL || 'http://localhost:8000') + '/api/reports/download', '_blank')}
-            className="bg-surface-container-highest text-on-surface px-6 py-2 rounded-lg text-sm font-semibold hover:bg-surface-variant transition-colors shadow-sm w-full sm:w-auto"
-          >
-            Export Executive Summary
-          </button>
-        </div>
+        <button
+          onClick={() => window.open(apiBase + '/api/reports/download?x_user_role=Super%20Admin', '_blank')}
+          className="bg-surface-container-highest text-on-surface px-6 py-2 rounded-lg text-sm font-semibold hover:bg-surface-variant transition-colors shadow-sm"
+        >
+          Export Executive Summary
+        </button>
       </div>
 
-      {/* Vulnerable Assets Section (Dynamic) */}
       {vulnerableAssets.length > 0 && (
-        <div className="mb-8 bg-error/10 border border-error/30 rounded-xl overflow-hidden shadow-sm relative group">
-          <div className="p-6 border-b border-error/20 flex justify-between items-center bg-error/5 relative z-10">
-             <div className="flex items-center gap-3">
-               <span className="material-symbols-outlined text-error animate-pulse">warning</span>
-               <h3 className="text-sm font-bold text-error uppercase tracking-wider">Critical Vulnerabilities Detected ({vulnerableAssets.length})</h3>
-             </div>
+        <div className="mb-8 bg-error/10 border border-error/30 rounded-xl overflow-hidden shadow-sm">
+          <div className="p-6 border-b border-error/20 flex justify-between items-center bg-error/5">
+            <h3 className="text-sm font-bold text-error uppercase tracking-wider">Critical Vulnerabilities Detected ({vulnerableAssets.length})</h3>
           </div>
-          <div className="overflow-x-auto relative z-10 custom-scrollbar w-full">
+          <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead>
                 <tr className="bg-error/5">
-                  <th className="px-6 py-3 text-[10px] text-error font-bold uppercase tracking-widest border-b border-error/20">Target / Asset</th>
-                  <th className="px-6 py-3 text-[10px] text-error font-bold uppercase tracking-widest border-b border-error/20">Algorithm</th>
-                  <th className="px-6 py-3 text-[10px] text-error font-bold uppercase tracking-widest border-b border-error/20">TLS Version</th>
-                  <th className="px-6 py-3 text-[10px] text-error font-bold uppercase tracking-widest border-b border-error/20 text-right">Risk</th>
+                  <th className="px-6 py-3 text-[10px] text-error font-bold uppercase tracking-widest">Target / Asset</th>
+                  <th className="px-6 py-3 text-[10px] text-error font-bold uppercase tracking-widest">Algorithm</th>
+                  <th className="px-6 py-3 text-[10px] text-error font-bold uppercase tracking-widest">TLS Version</th>
+                  <th className="px-6 py-3 text-[10px] text-error font-bold uppercase tracking-widest text-right">Risk</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-error/10">
-                {vulnerableAssets.map((asset, i) => (
-                   <tr key={i} className="hover:bg-error/10 transition-colors">
-                     <td className="px-6 py-4">
-                       <p className="text-xs font-bold text-on-surface">{asset.name}</p>
-                       <p className="text-[10px] text-on-surface-variant font-mono mt-0.5">{asset.ip_address || '---'}</p>
-                     </td>
-                     <td className="px-6 py-4">
-                       <span className="text-xs px-2 py-1 bg-surface-container-lowest border border-error/20 rounded text-error font-mono">{asset.scan_result?.algorithm || 'Unknown'}</span>
-                     </td>
-                     <td className="px-6 py-4">
-                       <span className="text-[11px] font-medium text-error">{asset.scan_result?.tls_version || 'Unknown'}</span>
-                     </td>
-                     <td className="px-6 py-4 text-right">
-                       <span className="text-[10px] font-bold py-1 px-2 bg-error text-white rounded">
-                         {asset.risk?.risk_level || 'High'}
-                       </span>
-                     </td>
-                   </tr>
+                {vulnerableAssets.map((asset) => (
+                  <tr key={asset.id} className="hover:bg-error/10 transition-colors">
+                    <td className="px-6 py-4 text-xs font-bold text-on-surface">{asset.name}</td>
+                    <td className="px-6 py-4 text-xs font-mono text-error">{asset.scan_result?.algorithm || 'Unknown'}</td>
+                    <td className="px-6 py-4 text-xs">{asset.scan_result?.tls_version || 'Unknown'}</td>
+                    <td className="px-6 py-4 text-right text-xs font-bold">{asset.risk?.risk_level || 'High'}</td>
+                  </tr>
                 ))}
               </tbody>
             </table>
@@ -79,23 +101,25 @@ const CyberRating = () => {
         </div>
       )}
 
-      {/* Bento Grid Layout */}
       <div className="grid grid-cols-12 gap-8 mb-8">
-        {/* Main Score Card (Visual Heatmap) */}
-        <div className="col-span-12 lg:col-span-8 bg-surface-container-lowest rounded-xl p-8 shadow-sm relative overflow-hidden">
-          <div className="absolute top-0 right-0 w-1/3 h-full opacity-5 pointer-events-none">
-            <svg className="w-full h-full text-primary fill-current" viewBox="0 0 100 100">
-              <path d="M0,50 Q25,25 50,50 T100,50" fill="none" stroke="currentColor" strokeWidth="0.5"></path>
-            </svg>
-          </div>
+        <div className="col-span-12 lg:col-span-8 bg-surface-container-lowest rounded-xl p-8 shadow-sm">
           <div className="flex flex-col md:flex-row gap-12 items-center">
             <div className="relative w-64 h-64 flex items-center justify-center">
-              {/* Custom Entropy Gauge Mockup */}
               <svg className="w-full h-full -rotate-90">
                 <circle className="opacity-50" cx="128" cy="128" fill="none" r="110" stroke="#eceef0" strokeWidth="16"></circle>
-                <circle cx="128" cy="128" fill="none" r="110" stroke="url(#score-grad)" strokeDasharray="690" strokeDashoffset="172" strokeLinecap="round" strokeWidth="16"></circle>
+                <circle
+                  cx="128"
+                  cy="128"
+                  fill="none"
+                  r="110"
+                  stroke="url(#score-grad-live)"
+                  strokeDasharray="690"
+                  strokeDashoffset={690 - Math.round((Math.max(0, Math.min(1000, metrics.rating1000)) / 1000) * 690)}
+                  strokeLinecap="round"
+                  strokeWidth="16"
+                ></circle>
                 <defs>
-                  <linearGradient id="score-grad" x1="0%" x2="100%" y1="0%" y2="0%">
+                  <linearGradient id="score-grad-live" x1="0%" x2="100%" y1="0%" y2="0%">
                     <stop offset="0%" stopColor="#ba1a1a"></stop>
                     <stop offset="50%" stopColor="#2170e4"></stop>
                     <stop offset="100%" stopColor="#006645"></stop>
@@ -103,97 +127,42 @@ const CyberRating = () => {
                 </defs>
               </svg>
               <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-                <span className="text-5xl font-extrabold text-on-surface">755</span>
-                <span className="text-[11px] text-on-surface-variant uppercase font-bold tracking-widest mt-1">Score / 1000</span>
+                <span className="text-5xl font-extrabold text-on-surface">{metrics.rating1000}</span>
+                <span className="text-[11px] text-on-surface-variant uppercase font-bold tracking-widest mt-1">Live Score / 1000</span>
               </div>
             </div>
-            
+
             <div className="flex-1 w-full">
-              <h3 className="text-sm font-bold text-on-surface mb-6 uppercase tracking-wider">Risk Distribution Heatmap</h3>
-              <div className="grid grid-cols-5 gap-2 h-48">
-                {/* Heatmap Rectangles */}
-                <div className="bg-tertiary/20 rounded-md border-b-4 border-tertiary"></div>
-                <div className="bg-tertiary/40 rounded-md border-b-4 border-tertiary"></div>
-                <div className="bg-secondary-container/30 rounded-md border-b-4 border-secondary-container"></div>
-                <div className="bg-secondary-container/10 rounded-md border-b-2 border-secondary-container/30"></div>
-                <div className="bg-error/10 rounded-md border-b-2 border-error/20"></div>
-                {/* Legend */}
-                <div className="col-span-5 flex justify-between mt-4">
-                  <span className="text-[10px] font-bold text-tertiary uppercase tracking-tight">Quantum-Safe</span>
-                  <span className="text-[10px] font-bold text-error uppercase tracking-tight">Critical Risk</span>
-                </div>
-              </div>
-              <div className="mt-8 flex gap-8">
-                <div>
-                  <p className="text-[11px] text-on-surface-variant mb-1 uppercase tracking-tighter">Analyzed Assets</p>
-                  <p className="text-2xl font-bold text-primary">14,208</p>
-                </div>
-                <div className="h-10 w-px bg-outline-variant/30"></div>
-                <div>
-                  <p className="text-[11px] text-on-surface-variant mb-1 uppercase tracking-tighter">Avg Entropy</p>
-                  <p className="text-2xl font-bold text-tertiary">0.998</p>
-                </div>
+              <h3 className="text-sm font-bold text-on-surface mb-4 uppercase tracking-wider">Current Runtime Snapshot</h3>
+              <div className="space-y-3 text-sm">
+                <p>Total Assets: <b>{metrics.total}</b></p>
+                <p>Low Risk: <b>{metrics.low}</b></p>
+                <p>Medium Risk: <b>{metrics.medium}</b></p>
+                <p>High/Critical Risk: <b>{metrics.high}</b></p>
+                <p>Safe Ratio: <b>{metrics.safePct}%</b></p>
               </div>
             </div>
           </div>
         </div>
 
-        {/* Global Comparison Sidebar */}
         <div className="col-span-12 lg:col-span-4 flex flex-col gap-6">
-          <div className="bg-surface-container-low rounded-xl p-6 flex-1 border border-outline-variant/10">
-            <h3 className="text-[11px] font-bold text-on-surface-variant mb-6 uppercase tracking-widest">Industry Benchmark</h3>
-            <div className="space-y-6">
-              <div>
-                <div className="flex justify-between items-center mb-1.5">
-                  <span className="text-sm font-medium">Your Org</span>
-                  <span className="text-sm font-bold">755</span>
-                </div>
-                <div className="h-2 w-full bg-surface-container-highest rounded-full overflow-hidden">
-                  <div className="h-full bg-primary" style={{ width: '75%' }}></div>
-                </div>
-              </div>
-              <div>
-                <div className="flex justify-between items-center text-on-surface-variant mb-1.5">
-                  <span className="text-sm font-medium">Finance Sector Avg</span>
-                  <span className="text-sm font-bold">542</span>
-                </div>
-                <div className="h-2 w-full bg-surface-container-highest rounded-full overflow-hidden">
-                  <div className="h-full bg-outline-variant" style={{ width: '54%' }}></div>
-                </div>
-              </div>
-              <div>
-                <div className="flex justify-between items-center text-on-surface-variant mb-1.5">
-                  <span className="text-sm font-medium">Global Fortune 500</span>
-                  <span className="text-sm font-bold">610</span>
-                </div>
-                <div className="h-2 w-full bg-surface-container-highest rounded-full overflow-hidden">
-                  <div className="h-full bg-outline-variant" style={{ width: '61%' }}></div>
-                </div>
-              </div>
-            </div>
+          <div className="bg-surface-container-low rounded-xl p-6 border border-outline-variant/10">
+            <h3 className="text-[11px] font-bold text-on-surface-variant mb-4 uppercase tracking-widest">Benchmark Context</h3>
+            <p className="text-xs text-on-surface-variant">No fixed external benchmark values are hardcoded here. This panel reflects only your live environment totals and risk composition.</p>
           </div>
-
           <div className="bg-primary text-white rounded-xl p-6 shadow-lg shadow-primary/20 bg-gradient-to-br from-primary to-primary-container">
-            <div className="flex justify-between items-start mb-4">
-              <span className="material-symbols-outlined text-3xl opacity-80">psychology</span>
-              <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded uppercase font-bold tracking-widest">AI Insight</span>
-            </div>
-            <p className="text-sm font-medium leading-relaxed">Transitioning 4 legacy TLS 1.2 endpoints to Dilithium-ready protocols would increase your score by <span className="font-bold underline">+85 points</span>.</p>
+            <p className="text-sm font-medium leading-relaxed">Immediate uplift opportunity: reduce the {metrics.high} high/critical assets to increase the live score in this environment.</p>
           </div>
         </div>
       </div>
 
-      {/* Asset Rating Table */}
       <div className="bg-surface-container-lowest rounded-xl shadow-sm overflow-hidden border border-outline-variant/10">
-        <div className="p-6 border-b border-surface-container-low flex justify-between items-center flex-col sm:flex-row gap-4 items-start sm:items-center">
-          <h3 className="text-sm font-bold text-on-surface uppercase tracking-wider">Asset Vulnerability Matrix</h3>
-          <button onClick={() => navigate('/asset-inventory')} className="flex items-center gap-2 cursor-pointer hover:text-primary transition-colors">
-            <span className="material-symbols-outlined text-slate-400">filter_list</span>
-            <span className="text-xs font-bold text-on-surface-variant uppercase tracking-tighter">Filter by Score</span>
-          </button>
+        <div className="p-6 border-b border-surface-container-low flex justify-between items-center">
+          <h3 className="text-sm font-bold text-on-surface uppercase tracking-wider">Asset Vulnerability Matrix (Live)</h3>
+          <button onClick={() => navigate('/asset-inventory')} className="text-xs font-bold text-on-surface-variant uppercase tracking-tighter hover:text-primary">Open Inventory</button>
         </div>
-        
-        <div className="overflow-x-auto custom-scrollbar w-full">
+
+        <div className="overflow-x-auto">
           <table className="w-full text-left">
             <thead>
               <tr className="bg-surface-container-low/50">
@@ -201,99 +170,25 @@ const CyberRating = () => {
                 <th className="px-6 py-4 text-[11px] text-on-surface-variant font-bold uppercase tracking-widest">Algorithm</th>
                 <th className="px-6 py-4 text-[11px] text-on-surface-variant font-bold uppercase tracking-widest">Status</th>
                 <th className="px-6 py-4 text-[11px] text-on-surface-variant font-bold uppercase tracking-widest">PQC Score</th>
-                <th className="px-6 py-4 text-[11px] text-on-surface-variant font-bold uppercase tracking-widest text-right">Trend</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-surface-container-low">
-              <tr className="hover:bg-surface-container-low transition-colors group">
-                <td className="px-6 py-4">
-                  <p className="text-sm font-semibold text-on-surface">api.nexus-core.internal</p>
-                  <p className="text-[10px] text-on-surface-variant font-mono">10.0.4.122</p>
-                </td>
-                <td className="px-6 py-4">
-                  <span className="text-xs px-2 py-1 bg-surface-container-high rounded text-on-surface font-mono">Kyber-768</span>
-                </td>
-                <td className="px-6 py-4">
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-tertiary"></div>
-                    <span className="text-xs font-bold uppercase tracking-tight text-tertiary">Elite-PQC</span>
-                  </div>
-                </td>
-                <td className="px-6 py-4">
-                  <span className="text-sm font-bold text-on-surface">942</span>
-                </td>
-                <td className="px-6 py-4 text-right">
-                  <span className="material-symbols-outlined text-tertiary text-lg">trending_up</span>
-                </td>
-              </tr>
-              <tr className="hover:bg-surface-container-low transition-colors group">
-                <td className="px-6 py-4">
-                  <p className="text-sm font-semibold text-on-surface">db-cluster-prod-01</p>
-                  <p className="text-[10px] text-on-surface-variant font-mono">10.0.12.44</p>
-                </td>
-                <td className="px-6 py-4">
-                  <span className="text-xs px-2 py-1 bg-surface-container-high rounded text-on-surface font-mono">AES-256-GCM</span>
-                </td>
-                <td className="px-6 py-4">
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-secondary-container"></div>
-                    <span className="text-xs font-bold uppercase tracking-tight text-secondary-container">Standard</span>
-                  </div>
-                </td>
-                <td className="px-6 py-4">
-                  <span className="text-sm font-bold text-on-surface">618</span>
-                </td>
-                <td className="px-6 py-4 text-right">
-                  <span className="material-symbols-outlined text-slate-400 text-lg">trending_flat</span>
-                </td>
-              </tr>
-              <tr className="hover:bg-surface-container-low transition-colors group">
-                <td className="px-6 py-4">
-                  <p className="text-sm font-semibold text-on-surface">legacy-gateway-auth</p>
-                  <p className="text-[10px] text-on-surface-variant font-mono">172.16.8.9</p>
-                </td>
-                <td className="px-6 py-4">
-                  <span className="text-xs px-2 py-1 bg-surface-container-high rounded text-on-surface font-mono">RSA-2048</span>
-                </td>
-                <td className="px-6 py-4">
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-error"></div>
-                    <span className="text-xs font-bold uppercase tracking-tight text-error">Legacy</span>
-                  </div>
-                </td>
-                <td className="px-6 py-4">
-                  <span className="text-sm font-bold text-on-surface">144</span>
-                </td>
-                <td className="px-6 py-4 text-right">
-                  <span className="material-symbols-outlined text-error text-lg">trending_down</span>
-                </td>
-              </tr>
-              <tr className="hover:bg-surface-container-low transition-colors group">
-                <td className="px-6 py-4">
-                  <p className="text-sm font-semibold text-on-surface">cdn-edge-global-02</p>
-                  <p className="text-[10px] text-on-surface-variant font-mono">92.44.121.2</p>
-                </td>
-                <td className="px-6 py-4">
-                  <span className="text-xs px-2 py-1 bg-surface-container-high rounded text-on-surface font-mono">Dilithium-3</span>
-                </td>
-                <td className="px-6 py-4">
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-tertiary"></div>
-                    <span className="text-xs font-bold uppercase tracking-tight text-tertiary">Elite-PQC</span>
-                  </div>
-                </td>
-                <td className="px-6 py-4">
-                  <span className="text-sm font-bold text-on-surface">885</span>
-                </td>
-                <td className="px-6 py-4 text-right">
-                  <span className="material-symbols-outlined text-tertiary text-lg">trending_up</span>
-                </td>
-              </tr>
+              {topRisk.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="px-6 py-6 text-sm text-on-surface-variant">No live scan records available yet.</td>
+                </tr>
+              ) : (
+                topRisk.map((asset) => (
+                  <tr key={asset.id} className="hover:bg-surface-container-low transition-colors">
+                    <td className="px-6 py-4 text-sm font-semibold text-on-surface">{asset.name}</td>
+                    <td className="px-6 py-4 text-xs font-mono">{asset.scan_result?.algorithm || 'Unknown'}</td>
+                    <td className="px-6 py-4 text-xs font-bold uppercase">{asset.risk?.risk_level || 'Unknown'}</td>
+                    <td className="px-6 py-4 text-sm font-bold">{Math.round((Number(asset.risk?.score || 0) / 100) * 1000)}</td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
-        </div>
-        <div className="p-4 bg-surface-container-low/30 border-t border-surface-container-low flex justify-center">
-          <button onClick={() => navigate('/asset-inventory')} className="text-primary text-xs font-bold uppercase tracking-widest hover:underline transition-colors w-full sm:w-auto">View All 412 Assets</button>
         </div>
       </div>
     </main>
@@ -301,5 +196,3 @@ const CyberRating = () => {
 };
 
 export default CyberRating;
-
-

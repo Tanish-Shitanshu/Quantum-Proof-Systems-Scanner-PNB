@@ -24,10 +24,20 @@ COMMON_SUBDOMAIN_PREFIXES = [
     "secure", "sso", "id", "docs", "ns1", "ns2", "origin", "internal", "intranet",
 ]
 
-MAX_SUBDOMAINS_TO_SCAN = 40
-SUBDOMAIN_SCAN_WORKERS = 12
-MAX_VULN_SCAN_TARGETS = 15
-VULN_SCAN_WORKERS = 10
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return max(minimum, int(raw))
+    except ValueError:
+        return default
+
+
+MAX_SUBDOMAINS_TO_SCAN = _env_int("MAX_SUBDOMAINS_TO_SCAN", 300)
+SUBDOMAIN_SCAN_WORKERS = _env_int("SUBDOMAIN_SCAN_WORKERS", 20)
+MAX_VULN_SCAN_TARGETS = _env_int("MAX_VULN_SCAN_TARGETS", 15)
+VULN_SCAN_WORKERS = _env_int("VULN_SCAN_WORKERS", 10)
 VULN_TEST_PARAMS = ["id", "q", "search", "item", "next", "url", "redirect", "file"]
 VULN_SQL_PAYLOADS = ["'", "' OR '1'='1", '" OR "1"="1', "1;--", "'--"]
 VULN_XSS_PAYLOAD = "<script>alert(1)</script>"
@@ -39,9 +49,9 @@ def _resolve_scan_profile(mode: str) -> dict:
     if "quick" in normalized:
         return {
             "mode": "Quick Scan",
-            "subdomain_limit": 8,
-            "subdomain_workers": 6,
-            "vuln_target_limit": 3,
+            "subdomain_limit": _env_int("QUICK_SCAN_SUBDOMAIN_LIMIT", 8),
+            "subdomain_workers": _env_int("QUICK_SCAN_SUBDOMAIN_WORKERS", 6),
+            "vuln_target_limit": _env_int("QUICK_SCAN_VULN_TARGET_LIMIT", 3),
             "include_mobile_discovery": False,
             "include_subdomain_vuln_scan": False,
         }
@@ -100,6 +110,10 @@ def _default_pqc_result() -> dict:
         "pqc_hybrid": False,
         "pqc_status": "None",
         "pqc_detection_notes": [],
+        # Confidence 0.0–1.0 and how it was derived (observed vs inferred).
+        "pqc_detection_confidence": 0.0,
+        "pqc_detection_method": "none",
+        "pqc_client_compatibility": None,
     }
 
 
@@ -275,22 +289,191 @@ def _normalize_discovered_name(hostname: str, root_domain: str) -> Optional[str]
 
 def _discover_subdomains_from_crtsh(domain: str) -> set:
     discovered = set()
-    try:
-        url = f"https://crt.sh/?q=%.{domain}&output=json"
-        response = requests.get(url, timeout=12, headers={"User-Agent": "QuantumShieldScanner/1.0"})
-        if response.status_code == 200 and response.text.strip():
+    url = f"https://crt.sh/?q=%.{domain}&output=json"
+    timeouts = [12, 25]
+
+    for timeout in timeouts:
+        try:
+            response = requests.get(url, timeout=timeout, headers={"User-Agent": "QuantumShieldScanner/1.0"})
+            if response.status_code != 200 or not response.text.strip():
+                continue
             try:
                 data = response.json()
-                for entry in data:
-                    name_values = entry.get("name_value", "")
-                    for name_value in name_values.splitlines():
-                        normalized = _normalize_discovered_name(name_value, domain)
-                        if normalized:
-                            discovered.add(normalized)
             except ValueError:
-                pass
+                continue
+
+            for entry in data:
+                name_values = entry.get("name_value", "")
+                for name_value in name_values.splitlines():
+                    normalized = _normalize_discovered_name(name_value, domain)
+                    if normalized:
+                        discovered.add(normalized)
+
+            if discovered:
+                break
+        except requests.RequestException:
+            continue
+
+    # Fallback to HTML parsing when JSON endpoint throttles or returns invalid payload.
+    if discovered:
+        return discovered
+
+    try:
+        response = requests.get(
+            f"https://crt.sh/?q=%.{domain}",
+            timeout=20,
+            headers={"User-Agent": "QuantumShieldScanner/1.0"},
+        )
+        if response.status_code == 200 and response.text:
+            pattern = re.compile(rf"(?:^|[\W])([a-z0-9_\-\.]+\.{re.escape(domain)})(?:$|[\W])", re.IGNORECASE)
+            for match in pattern.finditer(response.text):
+                normalized = _normalize_discovered_name(match.group(1), domain)
+                if normalized:
+                    discovered.add(normalized)
     except requests.RequestException:
         pass
+
+    return discovered
+
+
+def _discover_subdomains_from_hackertarget(domain: str) -> set:
+    discovered = set()
+    url = f"https://api.hackertarget.com/hostsearch/?q={domain}"
+    try:
+        response = requests.get(url, timeout=10, headers={"User-Agent": "QuantumShieldScanner/1.0"})
+        if response.status_code != 200 or not response.text:
+            return discovered
+        # Detect rate-limit response (51 bytes: "API count exceeded...")
+        if "api count" in response.text.lower() or "upgrade" in response.text.lower():
+            return discovered
+        for line in response.text.splitlines():
+            if not line or "," not in line:
+                continue
+            hostname = line.split(",", 1)[0].strip()
+            normalized = _normalize_discovered_name(hostname, domain)
+            if normalized:
+                discovered.add(normalized)
+    except requests.RequestException:
+        return discovered
+    return discovered
+
+
+def _discover_subdomains_from_certspotter(domain: str) -> set:
+    """Paginate certspotter — unauthenticated requests return max 100 per page."""
+    discovered = set()
+    base_url = (
+        "https://api.certspotter.com/v1/issuances"
+        f"?domain={domain}&include_subdomains=true&expand=dns_names"
+    )
+    after_id: str | None = None
+    for _page in range(10):  # max 10 pages = 1000 certs
+        url = base_url + (f"&after={after_id}" if after_id else "")
+        try:
+            response = requests.get(url, timeout=18, headers={"User-Agent": "QuantumShieldScanner/1.0"})
+            if response.status_code == 429:  # rate limited
+                break
+            if response.status_code != 200:
+                break
+            data = response.json()
+            if not isinstance(data, list) or not data:
+                break
+            for entry in data:
+                after_id = str(entry.get("id", "")) or after_id
+                for dns_name in entry.get("dns_names", []) or []:
+                    normalized = _normalize_discovered_name(dns_name, domain)
+                    if normalized:
+                        discovered.add(normalized)
+            if len(data) < 100:  # last page
+                break
+        except Exception:
+            break
+    return discovered
+
+
+def _discover_subdomains_from_rapiddns(domain: str) -> set:
+    """subdomain.center — free JSON API, no auth, replaces unreliable RapidDNS HTML."""
+    discovered = set()
+    url = f"https://api.subdomain.center/?domain={domain}"
+    try:
+        response = requests.get(url, timeout=15, headers={"User-Agent": "QuantumShieldScanner/1.0"})
+        if response.status_code != 200:
+            return discovered
+        data = response.json()
+        if not isinstance(data, list):
+            return discovered
+        for entry in data:
+            normalized = _normalize_discovered_name(str(entry), domain)
+            if normalized:
+                discovered.add(normalized)
+    except Exception:
+        return discovered
+    return discovered
+
+
+def _discover_subdomains_from_bufferover(domain: str) -> set:
+    discovered = set()
+    url = f"https://dns.bufferover.run/dns?q=.{domain}"
+    try:
+        response = requests.get(url, timeout=18, headers={"User-Agent": "QuantumShieldScanner/1.0"})
+        if response.status_code != 200:
+            return discovered
+        payload = response.json()
+        records = []
+        for key in ("FDNS_A", "FDNS_AAAA", "RDNS"):
+            records.extend(payload.get(key, []) or [])
+        for record in records:
+            text = str(record)
+            hostname = text.split(",")[-1].strip()
+            normalized = _normalize_discovered_name(hostname, domain)
+            if normalized:
+                discovered.add(normalized)
+    except Exception:
+        return discovered
+    return discovered
+
+
+def _discover_subdomains_from_alienvault(domain: str) -> set:
+    discovered = set()
+    url = f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/passive_dns"
+    try:
+        response = requests.get(url, timeout=18, headers={"User-Agent": "QuantumShieldScanner/1.0"})
+        if response.status_code != 200:
+            return discovered
+        payload = response.json()
+        for row in payload.get("passive_dns", []) or []:
+            hostname = row.get("hostname") or row.get("record") or ""
+            normalized = _normalize_discovered_name(str(hostname), domain)
+            if normalized:
+                discovered.add(normalized)
+    except Exception:
+        return discovered
+    return discovered
+
+
+def _discover_subdomains_from_subfinder(domain: str) -> set:
+    """Use subfinder CLI when available for broader passive discovery."""
+    discovered = set()
+    subfinder_bin = shutil.which("subfinder")
+    if not subfinder_bin:
+        return discovered
+
+    try:
+        proc = subprocess.run(
+            [subfinder_bin, "-silent", "-d", domain],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except Exception:
+        return discovered
+
+    output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    for line in output.splitlines():
+        normalized = _normalize_discovered_name(line.strip(), domain)
+        if normalized:
+            discovered.add(normalized)
+
     return discovered
 
 
@@ -714,16 +897,8 @@ def _scan_vulnerability_vectors(host: str, timeout: int = 8) -> dict:
                 payload=payload,
             ))
             break
-        if payload in text:
-            findings.append(_build_vuln_finding(
-                "SQL Injection",
-                "High",
-                "Payload reflected in response body after SQLi attempt",
-                response.url,
-                parameter=parameter,
-                payload=payload,
-            ))
-            break
+        # NOTE: payload reflection alone is NOT treated as SQLi — WAFs and
+        # banking error pages commonly echo back parameters (false positive).
 
     xss_probe_params = ["q", "search", "query", "keyword", "message"]
     for parameter in xss_probe_params:
@@ -1032,6 +1207,250 @@ def _probe_tls_versions(domain: str, port: int = 443, timeout: int = 5) -> List[
     return supported
 
 
+# PQC group IDs and their required client key-share sizes (bytes).
+_PQC_PROBE_GROUPS: dict = {
+    0x11EC: ("X25519MLKEM768 (Hybrid PQC)",  1120),  # 32-byte X25519 + 1088-byte ML-KEM-768
+    0x6399: ("X25519Kyber768 (Hybrid PQC)",  1120),  # 32 + 1088 (draft Kyber768)
+    0x2F39: ("X25519Kyber512 (Hybrid PQC)",   832),  # 32 + 800 (draft Kyber512)
+    0x11ED: ("MLKEM-1024 (Full PQC)",         1568),
+    0x023C: ("Kyber1024 (Full PQC)",          1568),
+    0x023B: ("Kyber768 (Full PQC)",           1184),
+}
+_CLASSICAL_GROUP_IDS = {0x001d: "X25519", 0x0017: "P-256", 0x0018: "P-384"}
+
+
+# Client compatibility metadata for each KEM group.
+_KEM_CLIENT_COMPAT: dict = {
+    "x25519mlkem768": "Chrome 131+, Firefox 132+, Edge 131+, OpenSSL 3.3+, BoringSSL (Jan 2025+)",
+    "x25519kyber768": "Chrome 124–130, Firefox 128–131 (draft), OpenSSL OQS fork",
+    "mlkem": "Experimental: only OpenSSL 3.3+ with ML-KEM support",
+    "kyber": "Draft: OpenSSL OQS fork, liboqs clients only",
+}
+
+
+def _kem_client_compat(kem_name: str) -> str:
+    if not kem_name:
+        return "Unknown client requirements"
+    lower = kem_name.lower()
+    for key, compat in _KEM_CLIENT_COMPAT.items():
+        if key in lower:
+            return compat
+    return "PQC-capable TLS 1.3 client required"
+
+
+def _probe_pqc_via_raw_tls(domain: str, port: int = 443, timeout: int = 8) -> dict:
+    """
+    Detect PQC KEM support by sending an empty key_share ClientHello.
+
+    When key_share is empty, the server MUST respond with a ServerHello (or
+    HelloRetryRequest) selecting its preferred group.  If it selects a PQC
+    group we know the server supports PQC — no need for valid key material.
+    Works on any self-hosted infrastructure without OpenSSL CLI.
+    """
+    import os as _os
+    import struct as _struct
+    import socket as _sock_module
+
+    result: dict = {"kem_name": None, "kem_group_id": None, "notes": []}
+
+    try:
+        sni = domain.encode()
+        sni_ext = (
+            b"\x00\x00"
+            + _struct.pack(">H", len(sni) + 5)
+            + _struct.pack(">H", len(sni) + 3)
+            + b"\x00"
+            + _struct.pack(">H", len(sni))
+            + sni
+        )
+
+        # supported_versions: TLS 1.3
+        sv_ext = b"\x00\x2b\x00\x03\x02\x03\x04"
+
+        # supported_groups: PQC first, then classical
+        groups = [0x11EC, 0x6399, 0x2F39, 0x023B, 0x001d, 0x0017, 0x0018]
+        sg_body = b"".join(_struct.pack(">H", g) for g in groups)
+        sg_ext = (b"\x00\x0a"
+                  + _struct.pack(">H", len(sg_body) + 2)
+                  + _struct.pack(">H", len(sg_body))
+                  + sg_body)
+
+        # key_share: EMPTY — forces server to reveal preferred group in ServerHello/HRR
+        ks_ext = b"\x00\x33\x00\x02\x00\x00"
+
+        sa = [0x0403, 0x0503, 0x0603, 0x0804, 0x0805, 0x0806, 0x0401]
+        sa_body = b"".join(_struct.pack(">H", s) for s in sa)
+        sa_ext = (b"\x00\x0d"
+                  + _struct.pack(">H", len(sa_body) + 2)
+                  + _struct.pack(">H", len(sa_body))
+                  + sa_body)
+
+        exts = sni_ext + sv_ext + sg_ext + ks_ext + sa_ext
+        ciphers = b"\x13\x01\x13\x02\x13\x03"
+        ch = (b"\x03\x03" + _os.urandom(32) + b"\x00"
+              + _struct.pack(">H", len(ciphers)) + ciphers
+              + b"\x01\x00"
+              + _struct.pack(">H", len(exts)) + exts)
+        hs = b"\x01" + _struct.pack(">I", len(ch))[1:] + ch
+        rec = b"\x16\x03\x01" + _struct.pack(">H", len(hs)) + hs
+
+        sock = _sock_module.create_connection((domain, port), timeout=timeout)
+        sock.settimeout(timeout)
+        sock.sendall(rec)
+        data = b""
+        for _ in range(8):
+            try:
+                chunk = sock.recv(8192)
+                if not chunk:
+                    break
+                data += chunk
+                if len(data) > 8000:
+                    break
+            except _sock_module.timeout:
+                break
+        sock.close()
+
+        # Parse TLS records for ServerHello or HelloRetryRequest key_share
+        offset = 0
+        while offset + 5 <= len(data):
+            rec_type = data[offset]
+            rec_len = _struct.unpack(">H", data[offset + 3: offset + 5])[0]
+            payload = data[offset + 5: offset + 5 + rec_len]
+            offset += 5 + rec_len
+
+            if rec_type != 0x16 or not payload:
+                continue
+            hs_type = payload[0]
+            if hs_type not in (0x02, 0x06):
+                continue
+
+            hlen = _struct.unpack(">I", b"\x00" + payload[1:4])[0]
+            sh = payload[4: 4 + hlen]
+            if len(sh) < 35:
+                continue
+
+            idx = 34  # skip version(2) + random(32)
+            sid_len = sh[idx]
+            idx += 1 + sid_len + 2 + 1  # skip session_id, cipher, compression
+
+            if idx + 2 > len(sh):
+                continue
+            ext_total = _struct.unpack(">H", sh[idx: idx + 2])[0]
+            idx += 2
+            ext_end = idx + ext_total
+
+            while idx + 4 <= ext_end:
+                ext_type = _struct.unpack(">H", sh[idx: idx + 2])[0]
+                ext_size = _struct.unpack(">H", sh[idx + 2: idx + 4])[0]
+                ext_data = sh[idx + 4: idx + 4 + ext_size]
+                idx += 4 + ext_size
+
+                if ext_type == 0x0033 and len(ext_data) >= 2:
+                    group_id = _struct.unpack(">H", ext_data[0:2])[0]
+                    if group_id in _PQC_PROBE_GROUPS:
+                        name = _PQC_PROBE_GROUPS[group_id][0]
+                        result["kem_group_id"] = group_id
+                        result["kem_name"] = name
+                        result["confidence"] = 0.95
+                        result["method"] = "raw_tls_probe_observed"
+                        label = "HelloRetryRequest" if hs_type == 0x06 else "ServerHello"
+                        result["notes"].append(
+                            f"PQC KEM detected via raw TLS {label}: server selected "
+                            f"{name} (group 0x{group_id:04x})"
+                        )
+                        return result
+
+    except Exception as exc:
+        result["notes"].append(f"Raw TLS PQC probe skipped: {type(exc).__name__}")
+
+    # Multi-SNI retry: if direct domain fails, try www. prefix (covers apex-only cert configs).
+    if not result.get("kem_name") and not domain.startswith("www."):
+        www_domain = f"www.{domain}"
+        retry = _probe_pqc_via_raw_tls.__wrapped__(www_domain, port, timeout)
+        if retry.get("kem_name"):
+            retry["notes"].append(f"Detected on www.{domain} SNI variant")
+            return retry
+
+    return result
+
+
+_probe_pqc_via_raw_tls.__wrapped__ = _probe_pqc_via_raw_tls  # type: ignore
+
+
+def _http_pqc_header_fallback(domain: str, port: int, pqc_result: dict) -> dict:
+    """
+    When OpenSSL can't negotiate PQC groups, detect PQC via HTTP response headers.
+    Covers Cloudflare, Google, AWS CloudFront, and explicit KEM advertisement.
+    """
+    MLKEM_KEYWORDS = ["mlkem", "ml-kem", "kyber", "x25519mlkem", "x25519kyber"]
+
+    try:
+        scheme = "https" if port == 443 else "https"
+        resp = requests.get(
+            f"{scheme}://{domain}:{port}/",
+            timeout=8,
+            allow_redirects=True,
+            headers={"User-Agent": "QuantumShieldScanner/1.0"},
+            verify=False,
+        )
+        headers_lower = {k.lower(): v.lower() for k, v in resp.headers.items()}
+        all_header_values = " ".join(headers_lower.values())
+
+        def _set_hybrid(kem_algo: str, note: str, confidence: float = 0.70, method: str = "cdn_header_inferred"):
+            pqc_result["pqc_kem_detected"] = True
+            pqc_result["pqc_kem_algorithm"] = kem_algo
+            pqc_result["pqc_hybrid"] = True
+            pqc_result["pqc_status"] = "Hybrid PQC"
+            pqc_result["pqc_detection_confidence"] = confidence
+            pqc_result["pqc_detection_method"] = method
+            pqc_result["pqc_detection_notes"] = pqc_result.get("pqc_detection_notes", []) + [note]
+
+        # Explicit KEM name in any response header (most definitive).
+        for keyword in MLKEM_KEYWORDS:
+            if keyword in all_header_values:
+                _set_hybrid("X25519MLKEM768 (Hybrid PQC)", f"ML-KEM keyword '{keyword}' found in HTTP response headers",
+                            confidence=0.90, method="http_header_explicit")
+                return pqc_result
+
+        # ── Cloudflare ─────────────────────────────────────────────────────
+        if "cf-ray" in headers_lower:
+            _set_hybrid("X25519MLKEM768 (Hybrid PQC via Cloudflare)",
+                        "Cloudflare edge detected (CF-Ray header) — X25519MLKEM768 deployed by default since Jan 2025",
+                        confidence=0.85, method="cdn_cloudflare_inferred")
+            return pqc_result
+
+        # ── Google ──────────────────────────────────────────────────────────
+        server_header = headers_lower.get("server", "")
+        alt_svc = headers_lower.get("alt-svc", "")
+        x_goog = any(k.startswith("x-goog") for k in headers_lower)
+        if server_header in ("gws", "google frontend", "sffe", "esf") or x_goog:
+            _set_hybrid("X25519Kyber768 (Hybrid PQC via Google)",
+                        "Google Web Server detected (server: gws) — Google deploys X25519Kyber768/MLKEM768 on all TLS 1.3 endpoints",
+                        confidence=0.82, method="cdn_google_inferred")
+            return pqc_result
+
+        # ── AWS CloudFront ──────────────────────────────────────────────────
+        if "x-amz-cf-id" in headers_lower or "x-amz-cf-pop" in headers_lower:
+            _set_hybrid("X25519MLKEM768 (Hybrid PQC via AWS CloudFront)",
+                        "AWS CloudFront detected — CloudFront supports X25519MLKEM768 on TLS 1.3 (enabled 2024)",
+                        confidence=0.75, method="cdn_cloudfront_inferred")
+            return pqc_result
+
+        # ── Fastly ──────────────────────────────────────────────────────────
+        if "x-served-by" in headers_lower and "cache-" in headers_lower.get("x-served-by", ""):
+            via = headers_lower.get("via", "")
+            if "varnish" in via or "fastly" in via or "x-fastly" in headers_lower:
+                _set_hybrid("X25519Kyber768 (Hybrid PQC via Fastly)",
+                            "Fastly CDN detected — Fastly deploys X25519Kyber768 on TLS 1.3",
+                            confidence=0.72, method="cdn_fastly_inferred")
+                return pqc_result
+
+    except Exception:
+        pass
+
+    return pqc_result
+
+
 def attempt_ssl_handshake(domain: str, port: int = 443, timeout: int = 5, detect_pqc: bool = False) -> Tuple[bool, Dict]:
     """
     Attempt SSL/TLS handshake with a domain/subdomain.
@@ -1079,6 +1498,29 @@ def attempt_ssl_handshake(domain: str, port: int = 443, timeout: int = 5, detect
                 pqc_result["pqc_signature_detected"],
             )
             pqc_result["pqc_detection_notes"] = openssl_probe.get("notes", [])
+
+            # Layer 2: raw TLS ClientHello probe — works on self-hosted infra without OpenSSL.
+            if not pqc_result["pqc_kem_detected"]:
+                raw_probe = _probe_pqc_via_raw_tls(domain, port)
+                if raw_probe.get("kem_name"):
+                    pqc_result["pqc_kem_detected"] = True
+                    pqc_result["pqc_kem_algorithm"] = raw_probe["kem_name"]
+                    pqc_result["pqc_kem_group_id"] = raw_probe["kem_group_id"]
+                    pqc_result["pqc_hybrid"] = _is_hybrid_kem_name(raw_probe["kem_name"])
+                    pqc_result["pqc_status"] = _derive_pqc_status(True, raw_probe["kem_name"], False)
+                    pqc_result["pqc_detection_confidence"] = raw_probe.get("confidence", 0.95)
+                    pqc_result["pqc_detection_method"] = raw_probe.get("method", "raw_tls_probe_observed")
+                pqc_result["pqc_detection_notes"] += raw_probe.get("notes", [])
+
+            # Layer 3: HTTP header signals for known CDN PQC deployments.
+            if not pqc_result["pqc_kem_detected"]:
+                pqc_result = _http_pqc_header_fallback(domain, port, pqc_result)
+
+            # Attach client compatibility note once KEM is known.
+            if pqc_result["pqc_kem_detected"] and not pqc_result.get("pqc_client_compatibility"):
+                pqc_result["pqc_client_compatibility"] = _kem_client_compat(
+                    pqc_result.get("pqc_kem_algorithm") or ""
+                )
         else:
             pqc_result["pqc_signature_detected"] = bool(certificate_sig)
             pqc_result["pqc_signature_algorithm"] = certificate_sig
@@ -1093,7 +1535,21 @@ def attempt_ssl_handshake(domain: str, port: int = 443, timeout: int = 5, detect
 
         return True, cert_info
     except Exception as e:
-        return False, {"error": str(e), "status": "inactive"}
+        err_str = str(e)
+        # Map common cryptic SSL errors to human-readable messages.
+        if "TLSV1_UNRECOGNIZED_NAME" in err_str:
+            clean = "Server does not recognise this hostname (SNI mismatch — no certificate configured for this subdomain)"
+        elif "CERTIFICATE_VERIFY_FAILED" in err_str:
+            clean = "Certificate verification failed (self-signed or untrusted CA)"
+        elif "CONNECTION_REFUSED" in err_str or "Connection refused" in err_str:
+            clean = "Connection refused — port 443 is closed"
+        elif "timed out" in err_str.lower() or "TIMEOUT" in err_str:
+            clean = "Connection timed out — host unreachable or firewall blocking"
+        elif "WRONG_VERSION_NUMBER" in err_str:
+            clean = "Unexpected response — port may not be serving HTTPS"
+        else:
+            clean = f"TLS handshake failed: {err_str[:120]}"
+        return False, {"error": clean, "status": "inactive"}
 
 
 def _derive_ssl_rating(days_to_expiry: Optional[int], tls_versions: List[str], algorithm: str, key_size: Optional[int]) -> str:
@@ -1125,6 +1581,7 @@ def get_subdomain_scan_data(
     is_active, handshake_data = attempt_ssl_handshake(subdomain, port, detect_pqc=detect_pqc)
 
     if is_active:
+        sub_ipv4, sub_ipv6 = _resolve_ips(subdomain)
         supported_tls_versions = []
         if probe_all_tls_versions:
             supported_tls_versions = _probe_tls_versions(subdomain, port)
@@ -1149,6 +1606,8 @@ def get_subdomain_scan_data(
             "days_to_expiry": days_to_expiry,
             "algorithm": algorithm,
             "response_time_ms": handshake_data.get("response_time_ms", 0),
+            "ipv4": sub_ipv4,
+            "ipv6": sub_ipv6,
             "has_vulnerabilities": False,
             "certificate_valid": handshake_data.get("certificate_valid", False),
             "ssl_rating": _derive_ssl_rating(days_to_expiry, supported_tls_versions, algorithm, key_size),
@@ -1177,6 +1636,7 @@ def get_subdomain_scan_data(
             scan_data["pqc_status"] = "None"
             scan_data["pqc_detection_notes"] = []
     else:
+        sub_ipv4, sub_ipv6 = _resolve_ips(subdomain)
         scan_data = {
             "subdomain": subdomain,
             "status": "inactive",
@@ -1190,6 +1650,8 @@ def get_subdomain_scan_data(
             "days_to_expiry": None,
             "algorithm": "Unavailable",
             "response_time_ms": None,
+            "ipv4": sub_ipv4,
+            "ipv6": sub_ipv6,
             "has_vulnerabilities": False,
             "certificate_valid": False,
             "ssl_rating": "N/A",
@@ -1226,11 +1688,28 @@ def discover_subdomains(domain: str, scan_mode: str = "Full Deep Scan") -> dict:
 
     discovered = set()
 
-    crtsh_results = _discover_subdomains_from_crtsh(domain)
-    dns_results = _discover_subdomains_from_dns(domain)
+    source_functions = {
+        "crtsh": _discover_subdomains_from_crtsh,
+        "dns": _discover_subdomains_from_dns,
+        "hackertarget": _discover_subdomains_from_hackertarget,
+        "certspotter": _discover_subdomains_from_certspotter,
+        "subdomaincenter": _discover_subdomains_from_rapiddns,
+        "bufferover": _discover_subdomains_from_bufferover,
+        "alienvault": _discover_subdomains_from_alienvault,
+        "subfinder": _discover_subdomains_from_subfinder,
+    }
+    source_results = {name: set() for name in source_functions}
 
-    discovered.update(crtsh_results)
-    discovered.update(dns_results)
+    with ThreadPoolExecutor(max_workers=min(8, len(source_functions))) as executor:
+        futures = {executor.submit(func, domain): name for name, func in source_functions.items()}
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                rows = future.result() or set()
+            except Exception:
+                rows = set()
+            source_results[name] = rows
+            discovered.update(rows)
 
     # Also include SAN domains from the main domain just in case
     for san in main_domain_data.get("san_domains", []):
@@ -1240,7 +1719,8 @@ def discover_subdomains(domain: str, scan_mode: str = "Full Deep Scan") -> dict:
 
     subdomains_list = sorted(discovered)
     total_discovered = len(subdomains_list)
-    subdomains_to_scan = subdomains_list[:profile["subdomain_limit"]]
+    full_deep_scan = profile.get("mode") == "Full Deep Scan"
+    subdomains_to_scan = subdomains_list if full_deep_scan else subdomains_list[:profile["subdomain_limit"]]
 
     scanned_subdomains = []
     active_count = 0
@@ -1269,7 +1749,7 @@ def discover_subdomains(domain: str, scan_mode: str = "Full Deep Scan") -> dict:
     expanded = _collect_san_expansions(domain, [main_domain_data, *scanned_subdomains])
     new_expansions = sorted(expanded.difference(discovered))
     if new_expansions:
-        expansion_budget = max(0, profile["subdomain_limit"] - len(scanned_subdomains))
+        expansion_budget = len(new_expansions) if full_deep_scan else max(0, profile["subdomain_limit"] - len(scanned_subdomains))
         expansion_targets = new_expansions[:expansion_budget]
         with ThreadPoolExecutor(max_workers=profile["subdomain_workers"]) as executor:
             futures = {
@@ -1336,14 +1816,21 @@ def discover_subdomains(domain: str, scan_mode: str = "Full Deep Scan") -> dict:
         "summary": {
             "total_subdomains": len(scanned_subdomains),
             "total_discovered_subdomains": total_discovered,
-            "scan_limit": profile["subdomain_limit"],
+            "scan_limit": len(subdomains_to_scan),
+            "requested_scan_limit": profile["subdomain_limit"],
             "scan_mode": profile["mode"],
             "active_subdomains": active_count,
             "inactive_subdomains": inactive_count,
             "active_percentage": round((active_count / len(scanned_subdomains)) * 100, 2) if scanned_subdomains else 0,
             "discovery_sources": {
-                "crtsh": len(crtsh_results),
-                "dns": len(dns_results),
+                "crtsh": len(source_results.get("crtsh", set())),
+                "dns": len(source_results.get("dns", set())),
+                "hackertarget": len(source_results.get("hackertarget", set())),
+                "certspotter": len(source_results.get("certspotter", set())),
+                "subdomaincenter": len(source_results.get("subdomaincenter", set())),
+                "bufferover": len(source_results.get("bufferover", set())),
+                "alienvault": len(source_results.get("alienvault", set())),
+                "subfinder": len(source_results.get("subfinder", set())),
                 "certificate_san": len(main_domain_data.get("san_domains", [])),
             },
             "expansion_sources": {
