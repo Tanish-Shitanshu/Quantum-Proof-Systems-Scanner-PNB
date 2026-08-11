@@ -50,3 +50,4 @@ htmlcov/
 
 # Local runtime persistence
 backend/data/runtime_state.json
+debug.json
