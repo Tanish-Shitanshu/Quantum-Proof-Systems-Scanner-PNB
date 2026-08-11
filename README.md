@@ -93,7 +93,7 @@ Information is useless if board members cannot understand it. We implemented a c
 ## 🏗️ Technical Architecture
 
 We spared absolutely no expense building a modern, highly concurrent stack:
-*   **Frontend (Vercel-Ready):** React 18, Vite, TypeScript, and a fully custom Tailwind CSS design system simulating extreme, premium modern B2B SaaS aesthetics (glassmorphism, bento grids, micro-animations).
+*   **Frontend (Vercel-Ready):** React 19, Vite, TypeScript, and a fully custom Tailwind CSS design system simulating extreme, premium modern B2B SaaS aesthetics (glassmorphism, bento grids, micro-animations).
 *   **Backend (Engine):** Low-latency Python FastAPI handling deep socket resolutions.
 *   **AI Core:** Gemini 1.5 Flash API for intent resolution and summary compilation.
 *   **Reporting:** ReportLab for native PDF rendering on-the-fly.
